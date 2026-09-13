@@ -2,6 +2,10 @@
 
 Status at the initial public-source export.
 
+For detailed subsystem history, exact rejected hypotheses, calibration evolution,
+and shader/native-path evidence, see `DEVELOPMENT_LOG.md`. It is historical and
+chronological; later entries and current source supersede earlier candidates.
+
 ## Verified baseline
 
 - Windows x64 Metro 2033 Redux 1.0.0.3
@@ -34,4 +38,3 @@ Status at the initial public-source export.
 ## Historical note
 
 The private development repository contains extensive experiments and captures. They were not published because they include large generated binaries, proprietary runtime observations, local paths, and failed candidates that obscure the verified baseline. The public history starts from the last committed integration baseline rather than rewriting that private history.
-

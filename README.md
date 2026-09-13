@@ -28,6 +28,8 @@ Important limitations:
 
 See [project status](docs/STATUS.md), [performance work](docs/PERFORMANCE.md), and [initial source provenance](docs/PROVENANCE.md) before starting a fix.
 
+New maintainers and coding agents should begin with the [maintainer/AI handoff](docs/AI_HANDOFF.md). The sanitized [full development log](docs/DEVELOPMENT_LOG.md) preserves the chronological investigation history and failed approaches.
+
 ## Building
 
 The project currently targets Windows x64 and Visual Studio 2022 with the Desktop development with C++ workload and a Windows SDK. Open [StereovisionHacks.sln](ThirdParty/3Dmigoto/StereovisionHacks.sln), select `Release | x64`, and build the `DirectX11` project.
