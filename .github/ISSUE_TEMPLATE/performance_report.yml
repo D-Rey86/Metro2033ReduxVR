@@ -1,0 +1,28 @@
+name: Performance report
+description: Report unexpectedly low or unstable performance with comparable measurements
+title: "[Performance]: "
+labels: [performance]
+body:
+  - type: textarea
+    attributes:
+      label: Hardware and software
+      description: CPU, GPU, driver, headset, connection method, Windows version, runtime, and Metro executable hash.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Render configuration
+      description: Refresh rate, SteamVR per-app resolution and pixel dimensions, mod scale, Metro quality, motion smoothing, and relevant toggles.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Test location and method
+      description: Exact checkpoint/camera position, duration, monitoring tool, CPU/GPU frame times, reprojection, and FPS range.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Logs and comparison
+      description: Attach reviewed logs and describe the known-good build or setup used for comparison.
+

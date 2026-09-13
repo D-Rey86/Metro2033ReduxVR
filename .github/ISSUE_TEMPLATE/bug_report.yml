@@ -1,0 +1,41 @@
+name: Bug report
+description: Report a reproducible visual, input, compatibility, or installer problem
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: checkboxes
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and removed private information from logs.
+          required: true
+        - label: I am not attaching Metro game files or an unreviewed crash dump.
+          required: true
+  - type: input
+    attributes:
+      label: Metro executable SHA-256 and storefront
+      placeholder: Steam, Epic, or other; include the full SHA-256
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Hardware and runtime
+      description: Headset, controllers, GPU, driver, SteamVR version, connection method, refresh rate, and render resolution.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Reproduction steps
+      description: Include level/checkpoint, settings, actions, and whether one or both eyes are affected.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Logs and video
+      description: Attach reviewed d3d11_log.txt and vr_compatibility_log.txt, plus a short through-the-lens video when visual.
+

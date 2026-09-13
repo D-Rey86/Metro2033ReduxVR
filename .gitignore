@@ -1,0 +1,50 @@
+# Local IDE and build output
+.vs/
+**/bin/
+**/obj/
+ThirdParty/3Dmigoto/builds/
+ThirdParty/openxr-build/
+*.user
+*.suo
+
+# Generated binaries, symbols, archives, and crash data
+*.exe
+*.pdb
+*.obj
+*.idb
+*.dmp
+*.zip
+*.7z
+*.tar
+*.rdc
+*.raw
+*.bin
+!ThirdParty/openvr/bin/win64/openvr_api.dll
+!ThirdParty/3Dmigoto/**/Dependencies/*.dll
+!ThirdParty/openvr/lib/win64/openvr_api.lib
+!ThirdParty/3Dmigoto/ThirdPartyLibs/**/*.lib
+
+# Runtime output and reverse-engineering captures
+Builds/
+GameReferences/
+FrameAnalysis-*/
+ShaderCache/
+ShaderUsage.txt
+d3d11_log.txt
+vr_compatibility_log.txt
+*.log
+*.bmp
+*.jpg
+*.jpeg
+*.png
+*.mp4
+
+# Local deployment helpers and generated package payloads
+**/CopyToGamesLocal.bat
+Packaging/Tester/Payload/
+Packaging/Tester/payload-manifest.json
+dist/
+
+# Python caches
+__pycache__/
+*.py[cod]
