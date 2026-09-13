@@ -9,7 +9,8 @@ This is the shortest reliable path to resume work without losing the project's h
 3. `docs/ARCHITECTURE.md` for ownership boundaries in the renderer.
 4. `docs/PERFORMANCE.md` for the current performance evidence and requirements for a stereo optimization.
 5. `docs/DEVELOPMENT_LOG.md` when investigating a specific subsystem or hypothesis.
-6. The current source and tests; they override prose when documentation is stale.
+6. `docs/history/` when the log points to a detailed numbered engineering note.
+7. The current source and tests; they override prose when documentation is stale.
 
 `DEVELOPMENT_LOG.md` is deliberately comprehensive and chronological. Search it by subsystem, shader hash, function name, checkpoint, or symptom instead of reading all of it linearly. Later dated entries supersede earlier candidates. Anything labeled rejected, rolled back, diagnostic, candidate, or awaiting headset validation is not an accepted fix.
 
@@ -49,5 +50,4 @@ Performance is the highest-value unfinished area. Measure CPU and GPU ownership 
 
 ## Missing historical artifacts
 
-The development log names private `Builds/`, `GameReferences/`, videos, captures, memory dumps, and old notes. They are intentionally absent because they include generated binaries, copyrighted observations, large captures, or local-machine details. Their absence does not affect a clean build. If an investigation genuinely requires one, reproduce the evidence from a legally owned game copy and document the method rather than committing the artifact.
-
+The development log and historical notes name private `Builds/`, `GameReferences/`, videos, captures, and memory dumps. Those artifacts are intentionally absent because they include generated binaries, copyrighted observations, large captures, or local-machine details. Their absence does not affect a clean build. If an investigation genuinely requires one, reproduce the evidence from a legally owned game copy and document the method rather than committing the artifact.

@@ -10,16 +10,17 @@ Last updated through 2026-09-12. The original summary header was written on
 > entries describe temporary candidates, deployment conventions, or conclusions
 > that were later superseded. Start with `AI_HANDOFF.md` and `STATUS.md`, trust
 > the newest applicable entry, and verify every claim against the current source.
-> References to `Builds/`, `GameReferences/`, private videos, captures, dumps,
-> and the old `Notes/` tree document evidence that existed during development;
-> those private/generated artifacts are intentionally not included here.
+> References to `Builds/`, `GameReferences/`, private videos, captures, and
+> dumps document evidence that existed during development; those private or
+> generated artifacts are intentionally not included. The authored `Notes/`
+> documents are published under `docs/history/`.
 
 For the complete final architecture, calibration controls, proven draw
 identities, failure history, and future VR-menu toggle plan for the separated
 left hand and wrist watch, read
-`Notes/31-separated-left-hand-and-watch.md` before modifying that subsystem.
+`history/31-separated-left-hand-and-watch.md` before modifying that subsystem.
 The distinct prologue hands/watch and the active first attachment candidate are
-recorded in `Notes/32-prologue-left-hand-and-watch.md`.
+recorded in `history/32-prologue-left-hand-and-watch.md`.
 
 ---
 

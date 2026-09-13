@@ -28,7 +28,7 @@ Important limitations:
 
 See [project status](docs/STATUS.md), [performance work](docs/PERFORMANCE.md), and [initial source provenance](docs/PROVENANCE.md) before starting a fix.
 
-New maintainers and coding agents should begin with the [maintainer/AI handoff](docs/AI_HANDOFF.md). The sanitized [full development log](docs/DEVELOPMENT_LOG.md) preserves the chronological investigation history and failed approaches.
+New maintainers and coding agents should begin with the [maintainer/AI handoff](docs/AI_HANDOFF.md). The sanitized [full development log](docs/DEVELOPMENT_LOG.md) preserves the chronological investigation history and failed approaches, while the [historical engineering notes](docs/history/README.md) retain deeper subsystem handoffs cited by the log.
 
 ## Building
 
