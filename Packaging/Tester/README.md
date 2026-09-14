@@ -17,7 +17,7 @@ The installer recognizes the verified Metro executable version 1.0.0.3 with SHA-
 3. Double-click `Install.cmd`.
 4. Start SteamVR, then launch Metro normally.
 
-The installer verifies the payload, backs up every replaced file, records the installation, and applies the renderer combination used to validate the VR mod: Medium quality, Very High tessellation, VSync Off, SSAA Off, and 16x texture filtering. It does not replace saves or personal VR settings. An unrecognized `metro.exe` hash produces a warning and requires explicit confirmation.
+The installer verifies the payload, backs up every replaced file, records the installation, and applies the renderer combination used to validate the VR mod: Medium quality, Very High tessellation, VSync Off, SSAA Off, and 16x texture filtering. It updates the active profile under `%LOCALAPPDATA%\4A Games\Metro 2033`, not a stale game-folder copy. Steam's most-recent profile can be derived before `user.cfg` exists; Epic or manually selected installations must be launched once first if Metro has not created any profile. The installer does not replace saves or personal VR settings. An unrecognized `metro.exe` hash produces a warning and requires explicit confirmation.
 
 ## Controls
 

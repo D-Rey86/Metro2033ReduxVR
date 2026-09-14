@@ -3,6 +3,8 @@ param(
     [string]$GamePath,
     [AllowNull()][string]$SteamRoot = (Get-ItemProperty -Path 'HKCU:\Software\Valve\Steam' -ErrorAction SilentlyContinue).SteamPath,
     [AllowNull()][string]$EpicManifestRoot = $(if ($env:ProgramData) { Join-Path $env:ProgramData 'Epic\EpicGamesLauncher\Data\Manifests' }),
+    [AllowNull()][string]$LocalAppDataRoot = $env:LOCALAPPDATA,
+    [string]$UserConfigPath,
     [switch]$NonInteractive
 )
 
@@ -24,14 +26,82 @@ $requiredGraphicsSettings = @(
 
 . (Join-Path $PSScriptRoot 'StoreDiscovery.ps1')
 
-function Find-MetroPath {
+function Find-MetroInstallation {
     $candidates = @(Get-MetroGameCandidates -SteamRoot $SteamRoot -EpicManifestRoot $EpicManifestRoot)
     foreach ($candidate in $candidates) {
         $hash = (Get-FileHash -LiteralPath (Join-Path $candidate.Path 'metro.exe') -Algorithm SHA256).Hash.ToUpperInvariant()
-        if ($hash -eq $expectedExeSha256) { return $candidate.Path }
+        if ($hash -eq $expectedExeSha256) { return $candidate }
     }
-    if ($candidates.Count -gt 0) { return $candidates[0].Path }
+    if ($candidates.Count -gt 0) { return $candidates[0] }
     return $null
+}
+
+function Get-MostRecentSteamProfileId {
+    if (-not $SteamRoot) { return $null }
+    $loginUsersPath = Join-Path $SteamRoot 'config\loginusers.vdf'
+    if (-not (Test-Path -LiteralPath $loginUsersPath -PathType Leaf)) { return $null }
+
+    $text = Get-Content -LiteralPath $loginUsersPath -Raw
+    $accounts = @([regex]::Matches(
+        $text,
+        '(?ms)^\s*"(?<id>[0-9]{17})"\s*\{(?<body>.*?)^\s*\}'))
+    if ($accounts.Count -eq 0) { return $null }
+    $selected = @($accounts | Where-Object {
+        $_.Groups['body'].Value -match '(?m)^\s*"MostRecent"\s*"1"\s*$'
+    })
+    if ($selected.Count -eq 1) {
+        $steamId = $selected[0].Groups['id'].Value
+    }
+    elseif ($accounts.Count -eq 1) {
+        $steamId = $accounts[0].Groups['id'].Value
+    }
+    else {
+        return $null
+    }
+
+    try { return ([Convert]::ToUInt64($steamId, 10)).ToString('x') }
+    catch { return $null }
+}
+
+function Resolve-MetroUserConfig([string]$store) {
+    if (-not $LocalAppDataRoot) {
+        throw 'LOCALAPPDATA is unavailable, so Metro user.cfg cannot be located safely.'
+    }
+    $profileRoot = Join-Path $LocalAppDataRoot '4A Games\Metro 2033'
+
+    if ($store -eq 'Steam') {
+        $steamProfileId = Get-MostRecentSteamProfileId
+        if ($steamProfileId) {
+            return Join-Path (Join-Path $profileRoot $steamProfileId) 'user.cfg'
+        }
+    }
+
+    $existing = @()
+    if (Test-Path -LiteralPath $profileRoot -PathType Container) {
+        $existing = @(Get-ChildItem -LiteralPath $profileRoot -Directory -ErrorAction SilentlyContinue |
+            ForEach-Object { Join-Path $_.FullName 'user.cfg' } |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
+    }
+    if ($existing.Count -eq 1) { return $existing[0] }
+    if ($existing.Count -gt 1) {
+        if ($NonInteractive) {
+            throw 'Multiple Metro profiles contain user.cfg; specify UserConfigPath explicitly.'
+        }
+        Write-Host ''
+        Write-Host 'Multiple Metro profiles were found:' -ForegroundColor Yellow
+        for ($i = 0; $i -lt $existing.Count; ++$i) {
+            Write-Host "[$($i + 1)] $($existing[$i])"
+        }
+        $selection = Read-Host 'Enter the number of the profile to configure'
+        $index = 0
+        if (-not [int]::TryParse($selection, [ref]$index) -or
+            $index -lt 1 -or $index -gt $existing.Count) {
+            throw 'A valid Metro profile was not selected.'
+        }
+        return $existing[$index - 1]
+    }
+
+    throw 'Metro has not created a user profile yet. Launch Metro once without the mod, close it, then run this installer again.'
 }
 
 function Stop-WithMessage([string]$message) {
@@ -105,8 +175,13 @@ try {
         Stop-WithMessage 'Metro 2033 Redux is running. Close the game, then run the installer again.'
     }
 
+    $detectedStore = 'Unknown'
     if (-not $GamePath) {
-        $GamePath = Find-MetroPath
+        $installation = Find-MetroInstallation
+        if ($installation) {
+            $GamePath = $installation.Path
+            $detectedStore = $installation.Store
+        }
     }
     if (-not $GamePath -and -not $NonInteractive) {
         $GamePath = Read-Host 'Metro was not found automatically. Enter the folder containing metro.exe'
@@ -116,6 +191,14 @@ try {
     }
 
     $GamePath = [IO.Path]::GetFullPath($GamePath.Trim('"'))
+    if ($detectedStore -eq 'Unknown') {
+        foreach ($candidate in @(Get-MetroGameCandidates -SteamRoot $SteamRoot -EpicManifestRoot $EpicManifestRoot)) {
+            if ([IO.Path]::GetFullPath($candidate.Path).Equals($GamePath, [StringComparison]::OrdinalIgnoreCase)) {
+                $detectedStore = $candidate.Store
+                break
+            }
+        }
+    }
     $metroExe = Join-Path $GamePath 'metro.exe'
     if (-not (Test-Path -LiteralPath $metroExe -PathType Leaf)) {
         Stop-WithMessage "metro.exe was not found in: $GamePath"
@@ -156,11 +239,19 @@ try {
         }
     }
 
+    if (-not $UserConfigPath) {
+        $UserConfigPath = Resolve-MetroUserConfig -store $detectedStore
+    }
+    $graphicsConfigPath = [IO.Path]::GetFullPath($UserConfigPath.Trim('"'))
+    $graphicsConfigDirectory = Split-Path -Parent $graphicsConfigPath
+    if (-not (Test-Path -LiteralPath $graphicsConfigDirectory -PathType Container)) {
+        New-Item -ItemType Directory -Path $graphicsConfigDirectory -Force | Out-Null
+    }
+
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
     $backupRoot = Join-Path $GamePath "Metro2033ReduxVR_Backups\$stamp"
     New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
 
-    $graphicsConfigPath = Join-Path $GamePath 'user.cfg'
     $graphicsConfigExisted = Test-Path -LiteralPath $graphicsConfigPath -PathType Leaf
     if ($graphicsConfigExisted) {
         $graphicsBackupPath = Join-Path $backupRoot 'user.cfg.pre-install'
@@ -218,7 +309,7 @@ try {
         gameExeSha256 = $actualExeSha256
         backupDirectory = $backupRoot
         graphicsSettings = [ordered]@{
-            configPath = 'user.cfg'
+            configPath = $graphicsConfigPath
             configExistedBefore = $graphicsConfigExisted
             settings = @($graphicsSettingsState)
         }
@@ -231,6 +322,7 @@ try {
     Write-Host 'Metro2033ReduxVR installed successfully.' -ForegroundColor Green
     Write-Host "Game folder: $GamePath"
     Write-Host "Backup:     $backupRoot"
+    Write-Host "Metro config: $graphicsConfigPath"
     Write-Host 'Metro graphics: Medium quality, Very High tessellation, VSync Off, SSAA Off, 16x texture filtering'
     Write-Host ''
     Write-Host 'Start SteamVR first, then launch Metro 2033 Redux normally through your game launcher.'
@@ -243,7 +335,6 @@ try {
 catch {
     $failure = $_.Exception.Message
     if ($graphicsConfigChanged -and $GamePath) {
-        $graphicsConfigPath = Join-Path $GamePath 'user.cfg'
         if ($graphicsConfigExisted -and $graphicsBackupPath -and
             (Test-Path -LiteralPath $graphicsBackupPath -PathType Leaf)) {
             Copy-Item -LiteralPath $graphicsBackupPath -Destination $graphicsConfigPath -Force

@@ -38,7 +38,7 @@ The output is written under `ThirdParty/3Dmigoto/builds/x64/Release/`. Detailed 
 
 ## Testing
 
-Do not install a development build over the only copy of a working game setup. Use a clean Metro installation or keep separate clean/test game directories. The installer template verifies the known executable hash, rejects diagnostic-enabled runtime configurations, backs up replaced files, records hashes, applies the tested Metro graphics combination, and supports safe uninstall.
+Do not install a development build over the only copy of a working game setup. Use a clean Metro installation or keep separate clean/test game directories. The installer template verifies the known executable hash, rejects diagnostic-enabled runtime configurations, backs up replaced files, records hashes, applies the tested Metro graphics combination to the active `%LOCALAPPDATA%` profile, and supports safe uninstall.
 
 When reporting a problem, include:
 

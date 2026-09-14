@@ -57,7 +57,7 @@ Engine facts that constrain everything:
 | Build output | `ThirdParty\3Dmigoto\builds\x64\Release\d3d11.dll` |
 | Game install | `<METRO_INSTALL>\` |
 | Runtime log | `<METRO_INSTALL>\d3d11_log.txt` |
-| Game config | `<METRO_INSTALL>\user.cfg` |
+| Active game config | `%LOCALAPPDATA%\4A Games\Metro 2033\<profile-id>\user.cfg` |
 | Learned meshes | `<METRO_INSTALL>\vr_viewmodel_meshes.txt` |
 | Notes | `<PRIVATE_DEVELOPMENT_ROOT>\Notes\` (historical; not published) |
 | RenderDoc | `<PRIVATE_DEVELOPMENT_ROOT>\Tools\RenderDoc\qrenderdoc.exe` |
@@ -11686,7 +11686,17 @@ remaining basic gestures have been implemented.
   preserved. Missing configurations, unrelated content, duplicate-key refusal,
   failure rollback, and legacy `qualitySetting` uninstall records remain
   supported.
+- Follow-up verification found that the previous installer wrote
+  `<METRO_INSTALL>\user.cfg`, while the live game updates
+  `%LOCALAPPDATA%\4A Games\Metro 2033\<profile-id>\user.cfg`. On the development
+  machine the latter was newer and still held `r_quality_level 1`, proving that
+  game-folder enforcement was ineffective. The installer now resolves the
+  active AppData profile: Steam's most-recent 64-bit account ID is converted to
+  Metro's lowercase hexadecimal profile folder, a sole existing profile is
+  accepted for Epic/manual installs, and ambiguous profiles require an explicit
+  selection. The absolute config path is stored for safe uninstall.
 - PowerShell syntax parsing, release-configuration rejection/acceptance, and
-  disposable existing-config, missing-config, user-change, and Epic-discovery
-  install/uninstall cases pass. The runtime DLL and shader binaries are
-  unchanged; a corrected public archive has not yet been published.
+  disposable existing-config, missing-config, user-change, Epic-discovery, and
+  clean-Steam-profile install/uninstall cases pass. The runtime DLL and shader
+  binaries are unchanged; a corrected public archive has not yet been
+  published.

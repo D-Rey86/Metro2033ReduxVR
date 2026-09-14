@@ -40,6 +40,13 @@ function Read-TextFile([string]$path) {
     }
 }
 
+function Resolve-RecordedConfigPath([string]$gamePath, [string]$recordedPath) {
+    if ([IO.Path]::IsPathRooted($recordedPath)) {
+        return [IO.Path]::GetFullPath($recordedPath)
+    }
+    return [IO.Path]::GetFullPath((Join-Path $gamePath $recordedPath))
+}
+
 function Restore-MetroQuality([string]$path, $quality, $warnings) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         if ([bool]$quality.configExistedBefore) {
@@ -164,11 +171,11 @@ try {
     }
 
     if ($record.PSObject.Properties.Name -contains 'graphicsSettings') {
-        $graphicsPath = Join-Path $GamePath ([string]$record.graphicsSettings.configPath)
+        $graphicsPath = Resolve-RecordedConfigPath -gamePath $GamePath -recordedPath ([string]$record.graphicsSettings.configPath)
         Restore-MetroGraphicsSettings -path $graphicsPath -graphics $record.graphicsSettings -warnings $warnings
     }
     elseif ($record.PSObject.Properties.Name -contains 'qualitySetting') {
-        $qualityPath = Join-Path $GamePath ([string]$record.qualitySetting.configPath)
+        $qualityPath = Resolve-RecordedConfigPath -gamePath $GamePath -recordedPath ([string]$record.qualitySetting.configPath)
         Restore-MetroQuality -path $qualityPath -quality $record.qualitySetting -warnings $warnings
     }
 
