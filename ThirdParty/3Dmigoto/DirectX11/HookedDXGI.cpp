@@ -366,15 +366,17 @@ void override_swap_chain(DXGI_SWAP_CHAIN_DESC *pDesc, DXGI_SWAP_CHAIN_DESC *orig
 	if (pDesc == nullptr)
 		return;
 
-	VRMenu::ClampOversizedOutputResolution(
+	VRMenu::SetRequestedOutputResolution(
+		pDesc->BufferDesc.Width, pDesc->BufferDesc.Height);
+	VRMenu::ForceVRPresentationResolution(
 		&pDesc->BufferDesc.Width, &pDesc->BufferDesc.Height);
+	VRMenu::SetCurrentResolution(
+		pDesc->BufferDesc.Width, pDesc->BufferDesc.Height);
 
-	// Do not resize the swap chain for the VR resolution setting. Metro's
-	// internal scene targets and post-process chain are larger than this
-	// output and resolve down to it. Changing the swap-chain dimensions alone
-	// leaves those native targets/copies at the old size and corrupts the
-	// submitted image. The resolution setting is applied at the internal
-	// render-target path instead.
+	// The VR presentation surface is fixed independently from the requested
+	// physical/window mode. Metro's internal scene path is normalized to the
+	// matching reference canvas in HackerDevice, so the final pass, menus and
+	// fullscreen-video backbuffer remain in one coordinate system.
 
 	// Save window handle so we can translate mouse coordinates to the window:
 	G->hWnd = pDesc->OutputWindow;
@@ -435,7 +437,9 @@ static void override_factory2_swap_chain(
 	if (ppDesc && *ppDesc) {
 		memcpy(descCopy, *ppDesc, sizeof(DXGI_SWAP_CHAIN_DESC1));
 		*ppDesc = descCopy;
-		VRMenu::ClampOversizedOutputResolution(&descCopy->Width, &descCopy->Height);
+		VRMenu::SetRequestedOutputResolution(descCopy->Width, descCopy->Height);
+		VRMenu::ForceVRPresentationResolution(&descCopy->Width, &descCopy->Height);
+		VRMenu::SetCurrentResolution(descCopy->Width, descCopy->Height);
 	}
 	ForceDisplayParams1(descCopy, fullscreenCopy);
 

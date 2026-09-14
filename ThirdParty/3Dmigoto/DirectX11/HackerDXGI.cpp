@@ -815,10 +815,19 @@ STDMETHODIMP HackerSwapChain::ResizeBuffers(THIS_
 	/* [in] */ UINT SwapChainFlags)
 {
 	LogInfo("HackerSwapChain::ResizeBuffers(%s@%p) called\n", type_name(this), this);
-	VRMenu::ClampOversizedOutputResolution(&Width, &Height);
-	// Keep the swap chain at Metro's native output dimensions. The VR
-	// resolution control must affect the internal scene targets, not this
-	// final output resource.
+	// A zero-sized resize means "use the current client area", while a
+	// 2560x1440 resize may simply be DXGI repeating the presentation size we
+	// forced earlier. Neither is evidence that the user's physical mode
+	// changed, so preserve the last genuine request in those cases.
+	if ((Width != 2560 || Height != 1440) ||
+		!VRMenu::RequestedOutputResolutionWidth() ||
+		!VRMenu::RequestedOutputResolutionHeight())
+		VRMenu::SetRequestedOutputResolution(Width, Height);
+	VRMenu::ForceVRPresentationResolution(&Width, &Height);
+	VRMenu::SetCurrentResolution(Width, Height);
+	// Keep Metro's final presentation contract at the validated 2560x1440.
+	// ResizeTarget remains independent so the physical companion window can
+	// stay at the user's monitor resolution.
 
 	if (G->mResolutionInfo.from == GetResolutionFrom::SWAP_CHAIN)
 	{
@@ -858,6 +867,10 @@ STDMETHODIMP HackerSwapChain::ResizeTarget(THIS_
 	// Unity does ResizeTarget -> SetFullscreenState -> ResizeBuffers
 
 	memcpy(&new_desc, pNewTargetParameters, sizeof(DXGI_MODE_DESC));
+	// ResizeTarget is the authoritative physical display/window request. Keep
+	// it for scene normalization, but do not replace it with the fixed VR
+	// presentation size.
+	VRMenu::SetRequestedOutputResolution(new_desc.Width, new_desc.Height);
 	ForceDisplayMode(&new_desc);
 	VRMenu::ClampOversizedOutputResolution(&new_desc.Width, &new_desc.Height);
 

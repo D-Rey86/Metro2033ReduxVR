@@ -30,6 +30,7 @@
 #include "HackerDXGI.h"
 #include "VRPose.h"
 #include "VRMenu.h"
+#include "VRCompatibility.h"
 #include "StereoTwin.h"
 #include "StereoSinglePass.h"
 
@@ -2684,6 +2685,26 @@ static bool heuristic_could_be_possible_resolution(unsigned width, unsigned heig
 // native scene canvas exists, and the hook keeps later resets at that scale.
 typedef void (*tMetroSetRenderResolution)(unsigned width, unsigned height);
 static tMetroSetRenderResolution trampoline_MetroSetRenderResolution = NULL;
+static unsigned sMetroSceneSourceWidth = 0;
+static unsigned sMetroSceneSourceHeight = 0;
+static unsigned sMetroSceneTargetWidth = 0;
+static unsigned sMetroSceneTargetHeight = 0;
+
+static VRCompatibility::SceneRenderTargetSize MonitorIndependentSceneTarget(
+	unsigned width, unsigned height)
+{
+	if (width == sMetroSceneTargetWidth && height == sMetroSceneTargetHeight &&
+		sMetroSceneTargetWidth && sMetroSceneTargetHeight) {
+		return {
+			VRMenu::DetectedSceneResolutionWidth(),
+			VRMenu::DetectedSceneResolutionHeight(),
+			sMetroSceneTargetWidth, sMetroSceneTargetHeight, true
+		};
+	}
+	return VRCompatibility::SelectMonitorIndependentSceneTarget(
+		width, height, VRMenu::RequestedOutputResolutionWidth(),
+		VRMenu::RequestedOutputResolutionHeight(), VRMenu::ResolutionScale());
+}
 
 static void Hooked_MetroSetRenderResolution(unsigned width, unsigned height)
 {
@@ -2698,17 +2719,39 @@ static void Hooked_MetroSetRenderResolution(unsigned width, unsigned height)
 	// canvas. Adjacent calls pass the base/menu canvas and remain unchanged.
 	const bool fullSceneCaller = callerRva == 0x83AF8B ||
 		callerRva == 0x83BAD7;
-	if (fullSceneCaller)
-		VRMenu::SetDetectedSceneResolution(width, height);
-	const float scale = VRMenu::EffectiveSceneResolutionScale();
-	if (scale > 1.0001f && fullSceneCaller) {
-		appliedInputWidth = max(1u, (unsigned)floorf(width * scale + 0.5f));
-		appliedInputHeight = max(1u, (unsigned)floorf(height * scale + 0.5f));
+	if (fullSceneCaller) {
+		const VRCompatibility::SceneRenderTargetSize target =
+			MonitorIndependentSceneTarget(width, height);
+		if (target.monitorIndependent) {
+			if (width != sMetroSceneTargetWidth ||
+				height != sMetroSceneTargetHeight) {
+				sMetroSceneSourceWidth = width;
+				sMetroSceneSourceHeight = height;
+			}
+			sMetroSceneTargetWidth = target.targetWidth;
+			sMetroSceneTargetHeight = target.targetHeight;
+			VRMenu::SetDetectedSceneResolution(
+				target.baseWidth, target.baseHeight);
+			appliedInputWidth = target.targetWidth;
+			appliedInputHeight = target.targetHeight;
+		} else {
+			VRMenu::SetDetectedSceneResolution(width, height);
+			const float scale = VRMenu::EffectiveSceneResolutionScale();
+			if (scale > 1.0001f) {
+				appliedInputWidth = max(1u,
+					(unsigned)floorf(width * scale + 0.5f));
+				appliedInputHeight = max(1u,
+					(unsigned)floorf(height * scale + 0.5f));
+			}
+		}
 	}
 	if (shouldLog)
 		LogInfo("VR resolution setter: requested=%ux%u scale=%.4f applied-input=%ux%u "
-			"caller=metro.exe+0x%zX\n", width, height, scale,
-			appliedInputWidth, appliedInputHeight, callerRva);
+			"caller=metro.exe+0x%zX monitor-output=%ux%u\n", width, height,
+			VRMenu::EffectiveSceneResolutionScale(),
+			appliedInputWidth, appliedInputHeight, callerRva,
+				VRMenu::RequestedOutputResolutionWidth(),
+				VRMenu::RequestedOutputResolutionHeight());
 	trampoline_MetroSetRenderResolution(appliedInputWidth, appliedInputHeight);
 	if (shouldLog) {
 		unsigned appliedWidth = 0, appliedHeight = 0;
@@ -2802,19 +2845,43 @@ STDMETHODIMP HackerDevice::CreateTexture2D(THIS_
 		// If the hook could not be installed, leave scales above 1x inactive.
 		// The effective-scale guard then keeps a readable native fallback rather
 		// than applying UI/high-resolution assumptions to an unscaled canvas.
-		if (requestedScale <= 1.0001f || trampoline_MetroSetRenderResolution)
+		const VRCompatibility::SceneRenderTargetSize target =
+			MonitorIndependentSceneTarget(
+				detectedSceneWidth, detectedSceneHeight);
+		const bool canNormalize = target.monitorIndependent &&
+			trampoline_MetroSetRenderResolution;
+		if (canNormalize) {
+			sMetroSceneSourceWidth = detectedSceneWidth;
+			sMetroSceneSourceHeight = detectedSceneHeight;
+			sMetroSceneTargetWidth = target.targetWidth;
+			sMetroSceneTargetHeight = target.targetHeight;
+			VRMenu::SetDetectedSceneResolution(
+				target.baseWidth, target.baseHeight);
+		} else if (requestedScale <= 1.0001f ||
+			trampoline_MetroSetRenderResolution) {
 			VRMenu::SetDetectedSceneResolution(detectedSceneWidth,
 				detectedSceneHeight);
+		}
 		const float scale = VRMenu::EffectiveSceneResolutionScale();
-		if (InterlockedCompareExchange(&sMetroSceneScaleActivated, 1, 0) == 0
-			&& scale > 1.0001f && trampoline_MetroSetRenderResolution) {
-			const unsigned scaledWidth = max(1u,
-				(unsigned)floorf(detectedSceneWidth * scale + 0.5f));
-			const unsigned scaledHeight = max(1u,
-				(unsigned)floorf(detectedSceneHeight * scale + 0.5f));
-			LogInfo("VR resolution first-allocation activation: %ux%u scale=%.4f -> "
-				"%ux%u\n", detectedSceneWidth, detectedSceneHeight, scale,
-				scaledWidth, scaledHeight);
+		if (trampoline_MetroSetRenderResolution &&
+			(canNormalize || scale > 1.0001f) &&
+			InterlockedCompareExchange(&sMetroSceneScaleActivated, 1, 0) == 0) {
+			const unsigned scaledWidth = canNormalize
+				? target.targetWidth
+				: max(1u, (unsigned)floorf(
+					detectedSceneWidth * scale + 0.5f));
+			const unsigned scaledHeight = canNormalize
+				? target.targetHeight
+				: max(1u, (unsigned)floorf(
+					detectedSceneHeight * scale + 0.5f));
+			LogInfo("VR resolution first-allocation activation: %ux%u output=%ux%u "
+				"base=%ux%u scale=%.4f -> %ux%u\n",
+				detectedSceneWidth, detectedSceneHeight,
+				VRMenu::RequestedOutputResolutionWidth(),
+				VRMenu::RequestedOutputResolutionHeight(),
+				canNormalize ? target.baseWidth : detectedSceneWidth,
+				canNormalize ? target.baseHeight : detectedSceneHeight,
+				scale, scaledWidth, scaledHeight);
 			// The initial renderer setup happens before d3d11.dll is loaded, so
 			// the first scene allocation is the earliest safe interception point.
 			// Rebuild Metro's viewport/aspect state before creating this resource.
@@ -2895,16 +2962,26 @@ STDMETHODIMP HackerDevice::CreateTexture2D(THIS_
 	// handle any cached native-size descriptors Metro submits later.
 	D3D11_TEXTURE2D_DESC vrScaleDesc;
 	const D3D11_TEXTURE2D_DESC *candidateDesc = pNewDesc ? pNewDesc : pDesc;
-	if (candidateDesc && VRMenu::IsBaseSceneResolution(
-		candidateDesc->Width, candidateDesc->Height)
+	const bool sourceSceneDescriptor = candidateDesc &&
+		candidateDesc->Width == sMetroSceneSourceWidth &&
+		candidateDesc->Height == sMetroSceneSourceHeight;
+	if (candidateDesc && (sourceSceneDescriptor || VRMenu::IsBaseSceneResolution(
+		candidateDesc->Width, candidateDesc->Height))
 		&& InterlockedCompareExchange(&sMetroSceneScaleActivated, 0, 0) != 0) {
 		const float scale = VRMenu::EffectiveSceneResolutionScale();
-		if (scale > 1.0001f) {
+		const unsigned targetWidth = sMetroSceneTargetWidth
+			? sMetroSceneTargetWidth
+			: max(1u, (unsigned)floorf(
+				candidateDesc->Width * scale + 0.5f));
+		const unsigned targetHeight = sMetroSceneTargetHeight
+			? sMetroSceneTargetHeight
+			: max(1u, (unsigned)floorf(
+				candidateDesc->Height * scale + 0.5f));
+		if (candidateDesc->Width != targetWidth ||
+			candidateDesc->Height != targetHeight) {
 			vrScaleDesc = *candidateDesc;
-			vrScaleDesc.Width = max(1u,
-				(unsigned)floorf(candidateDesc->Width * scale + 0.5f));
-			vrScaleDesc.Height = max(1u,
-				(unsigned)floorf(candidateDesc->Height * scale + 0.5f));
+			vrScaleDesc.Width = targetWidth;
+			vrScaleDesc.Height = targetHeight;
 			pNewDesc = &vrScaleDesc;
 			LogInfo("VR resolution texture scale: %ux%u -> %ux%u fmt=%d bind=0x%x\n",
 				candidateDesc->Width, candidateDesc->Height,

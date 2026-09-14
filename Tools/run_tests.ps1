@@ -13,6 +13,7 @@ if (-not $python) {
 $pythonTests = @(
     'test_decal_bounded_depth_offset.py',
     'test_embedded_weapon_calibrations.py',
+    'test_monitor_independent_resolution.py',
     'test_openvr_frame_pacing.py',
     'test_openvr_resolution_contract.py',
     'test_vr_menu_compositor_overlay.py'

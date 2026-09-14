@@ -27,6 +27,8 @@ namespace {
 	bool sCancelLatched = false;
 	unsigned sCurrentResolutionWidth = 0;
 	unsigned sCurrentResolutionHeight = 0;
+	unsigned sRequestedOutputResolutionWidth = 0;
+	unsigned sRequestedOutputResolutionHeight = 0;
 	unsigned sResolutionBaseWidth = 0;
 	unsigned sResolutionBaseHeight = 0;
 	bool sSceneResolutionDetected = false;
@@ -278,6 +280,44 @@ bool ClampOversizedOutputResolution(unsigned *width, unsigned *height)
 	return true;
 }
 
+bool ForceVRPresentationResolution(unsigned *width, unsigned *height)
+{
+	if (!width || !height)
+		return false;
+	static const unsigned kVRPresentationWidth = 2560;
+	static const unsigned kVRPresentationHeight = 1440;
+	if (*width == kVRPresentationWidth &&
+		*height == kVRPresentationHeight)
+		return false;
+
+	const unsigned requestedWidth = *width;
+	const unsigned requestedHeight = *height;
+	*width = kVRPresentationWidth;
+	*height = kVRPresentationHeight;
+	LogInfo("VR resolution: presentation backbuffer %ux%u -> %ux%u "
+		"(physical display target unchanged)\n", requestedWidth,
+		requestedHeight, *width, *height);
+	return true;
+}
+
+void SetRequestedOutputResolution(unsigned width, unsigned height)
+{
+	if (width < 640 || height < 360)
+		return;
+	sRequestedOutputResolutionWidth = width;
+	sRequestedOutputResolutionHeight = height;
+}
+
+unsigned RequestedOutputResolutionWidth()
+{
+	return sRequestedOutputResolutionWidth;
+}
+
+unsigned RequestedOutputResolutionHeight()
+{
+	return sRequestedOutputResolutionHeight;
+}
+
 void Initialize()
 {
 	if (sInitialized) return;
@@ -390,6 +430,8 @@ bool ResolutionChangePending()
 
 void SetCurrentResolution(unsigned width, unsigned height)
 {
+	if (width < 640 || height < 360)
+		return;
 	sCurrentResolutionWidth = width;
 	sCurrentResolutionHeight = height;
 }

@@ -24,6 +24,7 @@ $tests = @(
     @{ Source = 'test_native_camera_credit_adapter.cpp'; Extra = @('/wd4505') },
     @{ Source = 'test_native_body_turn.cpp'; Extra = @() },
     @{ Source = 'test_native_vendor_camera_owner.cpp'; Extra = @('/wd4505') },
+    @{ Source = 'test_monitor_independent_resolution.cpp'; Extra = @() },
     @{ Source = 'test_vr_compatibility.cpp'; Extra = @() }
 )
 

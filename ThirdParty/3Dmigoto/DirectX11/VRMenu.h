@@ -75,6 +75,13 @@ void Save();
 // opened even if the user changes nothing. Keep the VR presentation surface at
 // the known physical output size; this does not touch internal scene targets.
 bool ClampOversizedOutputResolution(unsigned *width, unsigned *height);
+// Metro's VR presentation backbuffer is fixed to the fully validated
+// 2560x1440 surface. The physical window/display target remains independent,
+// so lower-resolution monitors receive only a scaled companion mirror.
+bool ForceVRPresentationResolution(unsigned *width, unsigned *height);
+void SetRequestedOutputResolution(unsigned width, unsigned height);
+unsigned RequestedOutputResolutionWidth();
+unsigned RequestedOutputResolutionHeight();
 
 // Updated from the live swap-chain path so the Picture tab reports the
 // resolution the game is actually presenting, rather than a hard-coded value.

@@ -24,6 +24,7 @@ chronological; later entries and current source supersede earlier candidates.
 - main-menu/scripted-scene state separation fixes
 - shader and depth handling for several decal, lighting, culling, and pre-rendered-video problems
 - clean-install-oriented Steam installer with executable verification, explicit Epic rejection, backups, manifest validation, uninstall records, release-safe 3Dmigoto validation, and enforcement of the tested Metro graphics combination
+- a VR-owned 2560x1440 presentation surface so Metro's monitor-resolution setting no longer changes headset source geometry or splits pre-rendered video at 1080p
 
 ## Unresolved or incompletely validated
 

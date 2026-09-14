@@ -11706,3 +11706,26 @@ remaining basic gestures have been implemented.
   manifest and rejects every executable whose SHA-256 is not the verified Steam
   1.0.0.3 hash. The former interactive `YES` override was removed so an
   unsupported binary cannot be installed accidentally.
+
+### VR-owned presentation surface — 2026-09-13
+
+- A tester report and a controlled local comparison established that Metro's
+  `1920x1080` output mode split pre-rendered video even with the accepted
+  runtime, while changing only Metro's mode to `2560x1440` restored it. The
+  headset runtime recommendation was not the cause: OpenVR continued to request
+  its own independent per-eye dimensions.
+- The VR runtime now owns a fixed `2560x1440` windowed presentation backbuffer
+  while leaving DXGI `ResizeTarget` at the user's physical companion-window
+  mode. Metro's SSAA-Off scene canvas is normalized to its matching verified
+  `2560x1421` geometry only when necessary. Exact reference canvases are
+  recognized before ratio conversion so an already-correct scene cannot be
+  scaled twice.
+- The established 1.0x final-backbuffer submission path remains unchanged;
+  isolated high-resolution scene submission is still limited to VR scales
+  above 1.0. Repeated zero-sized or already-forced buffer resizes retain the
+  last genuine physical-mode request.
+- The policy and integration guards, OpenVR output-contract guard, compositor
+  menu guard, and Release x64 build pass. A headset run after explicitly
+  selecting Metro `1920x1080` retained correct video and world presentation;
+  the compatibility report recorded the intended `2560x1440` VR source and a
+  successful runtime-shaped submission.
