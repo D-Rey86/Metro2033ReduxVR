@@ -107,6 +107,7 @@ try {
     $pwshPath = (Get-Process -Id $PID).Path
     & $pwshPath -NoProfile -File (Join-Path $PackageRoot 'Install-Metro2033ReduxVR.ps1') -SteamRoot $disabledSteam -EpicManifestRoot $epicManifests -LocalAppDataRoot $localAppData3 -NonInteractive
     Assert-True ($LASTEXITCODE -eq 1) 'Installer did not reject the discovered Epic installation.'
+    $global:LASTEXITCODE = 0
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $game3 'Metro2033ReduxVR.install.json'))) 'Epic rejection created an install record.'
     Assert-Setting (Read-All $config3) 'r_quality_level' '2' 'Epic rejection changed the Metro profile config.'
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $game3 'd3d11.dll'))) 'Epic rejection changed the game folder.'
