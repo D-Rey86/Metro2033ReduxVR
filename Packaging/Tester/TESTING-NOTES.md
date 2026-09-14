@@ -17,6 +17,10 @@ Please exercise at least the following:
 9. Frame pacing with Expanded Visibility enabled and disabled.
 10. Confirm Metro reports Medium quality, Very High tessellation, VSync Off,
     SSAA Off, and 16x texture filtering after installation.
+11. Select a lower Metro resolution such as 1920x1080, fully restart the game,
+    and confirm the startup video remains a single correctly proportioned image
+    and gameplay world scale is unchanged. The compatibility report should
+    continue to show `source=2560x1440`.
 
 The desktop mirror must not show 3Dmigoto's green shader-hunting overlay or a
 green `Stereo disabled` line. That text refers to legacy NVIDIA 3D Vision, not
