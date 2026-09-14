@@ -30,9 +30,9 @@ this is a troubleshooting baseline, not a claimed performance fix.
 
 Known limitations:
 
-- Only the 1.0.0.3 executable hash listed in the package manifest is currently
-  verified. Steam and Epic installs are both discoverable, but a different
-  storefront executable hash requires separate runtime validation.
+- Only the Steam 1.0.0.3 executable hash listed in the package manifest is
+  supported. The Epic Games Store version has been tested and does not work
+  with this build; the installer rejects it.
 - The production runtime is OpenVR/SteamVR; the experimental OpenXR path is not
   the supported configuration.
 - The intro video and some non-gameplay screens have historically needed

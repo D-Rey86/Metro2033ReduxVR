@@ -11696,7 +11696,13 @@ remaining basic gestures have been implemented.
   accepted for Epic/manual installs, and ambiguous profiles require an explicit
   selection. The absolute config path is stored for safe uninstall.
 - PowerShell syntax parsing, release-configuration rejection/acceptance, and
-  disposable existing-config, missing-config, user-change, Epic-discovery, and
+  disposable existing-config, missing-config, user-change, Epic-rejection, and
   clean-Steam-profile install/uninstall cases pass. The runtime DLL and shader
   binaries are unchanged; a corrected public archive has not yet been
   published.
+- Subsequent external testing verified that the Epic Games Store version does
+  not work with the current native RVA/runtime assumptions. Public test builds
+  are therefore Steam-only: the installer rejects a path identified by an Epic
+  manifest and rejects every executable whose SHA-256 is not the verified Steam
+  1.0.0.3 hash. The former interactive `YES` override was removed so an
+  unsupported binary cannot be installed accidentally.

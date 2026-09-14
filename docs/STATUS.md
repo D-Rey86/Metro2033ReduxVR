@@ -23,14 +23,14 @@ chronological; later entries and current source supersede earlier candidates.
 - resolution scaling, world/IPD controls, comfort turning, recentering, brightness, HUD, scope, and placement settings
 - main-menu/scripted-scene state separation fixes
 - shader and depth handling for several decal, lighting, culling, and pre-rendered-video problems
-- clean-install-oriented installer with executable verification, automatic Steam/Epic discovery, backups, manifest validation, uninstall records, release-safe 3Dmigoto validation, and enforcement of the tested Metro graphics combination
+- clean-install-oriented Steam installer with executable verification, explicit Epic rejection, backups, manifest validation, uninstall records, release-safe 3Dmigoto validation, and enforcement of the tested Metro graphics combination
 
 ## Unresolved or incompletely validated
 
 - stereo rendering remains performance-heavy
 - AMD GPU behavior is not verified on real AMD hardware
 - some testers report background flicker or menu double vision that has not reproduced on every setup
-- other storefront builds are not supported unless their executable is validated
+- the tested Epic Games Store version is incompatible; this release is Steam-only
 - OpenXR is experimental
 - one localized sewer-water effect can disappear near the lower edge of the view
 - the shooting range has a localized aim/projectile discrepancy not seen in normal gameplay testing

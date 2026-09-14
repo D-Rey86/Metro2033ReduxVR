@@ -199,6 +199,9 @@ try {
             }
         }
     }
+    if ($detectedStore -eq 'Epic Games Store') {
+        Stop-WithMessage 'The Epic Games Store version is not supported by this build. Install requires the Steam version of Metro 2033 Redux.'
+    }
     $metroExe = Join-Path $GamePath 'metro.exe'
     if (-not (Test-Path -LiteralPath $metroExe -PathType Leaf)) {
         Stop-WithMessage "metro.exe was not found in: $GamePath"
@@ -210,15 +213,7 @@ try {
 
     $actualExeSha256 = (Get-FileHash -LiteralPath $metroExe -Algorithm SHA256).Hash.ToUpperInvariant()
     if ($actualExeSha256 -ne $expectedExeSha256) {
-        $message = "This Metro executable has not been tested.`nExpected: $expectedExeSha256`nFound:    $actualExeSha256"
-        if ($NonInteractive) {
-            Stop-WithMessage $message
-        }
-        Write-Host $message -ForegroundColor Yellow
-        $answer = Read-Host 'Continue anyway? Type YES to continue'
-        if ($answer -cne 'YES') {
-            Stop-WithMessage 'Installation cancelled without changing the game folder.'
-        }
+        Stop-WithMessage "This Metro executable is not supported by this build. The Steam 1.0.0.3 executable is required.`nExpected: $expectedExeSha256`nFound:    $actualExeSha256"
     }
 
     $payloadRoot = Join-Path $PSScriptRoot 'Payload'

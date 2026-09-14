@@ -88,8 +88,8 @@ try {
     }
     Assert-True ($uninstalled2 -match '(?m)^custom_test_value 7\r?$') 'Uninstaller removed later unrelated config content.'
 
-    # Automatic Epic discovery must resolve InstallLocation for both install
-    # and uninstall.
+    # Automatic Epic discovery must identify and reject the incompatible build
+    # without changing the game or profile.
     $game3 = Join-Path $testRoot 'epic-auto-discovery'
     $epicManifests = Join-Path $testRoot 'epic-manifests'
     $disabledSteam = Join-Path $testRoot 'no-steam-here'
@@ -104,11 +104,12 @@ try {
         InstallLocation = $game3
         LaunchExecutable = 'metro.exe'
     } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $epicManifests 'metro.item') -Encoding UTF8
-    & (Join-Path $PackageRoot 'Install-Metro2033ReduxVR.ps1') -SteamRoot $disabledSteam -EpicManifestRoot $epicManifests -LocalAppDataRoot $localAppData3 -NonInteractive
-    Assert-True (Test-Path -LiteralPath (Join-Path $game3 'Metro2033ReduxVR.install.json')) 'Installer did not use the discovered Epic path.'
-    Assert-Setting (Read-All $config3) 'r_quality_level' '3' 'Installer did not use the sole Epic Metro profile config.'
-    & (Join-Path $PackageRoot 'Uninstall-Metro2033ReduxVR.ps1') -SteamRoot $disabledSteam -EpicManifestRoot $epicManifests -NonInteractive
-    Assert-True (-not (Test-Path -LiteralPath (Join-Path $game3 'Metro2033ReduxVR.install.json'))) 'Uninstaller did not find the discovered Epic installation.'
+    $pwshPath = (Get-Process -Id $PID).Path
+    & $pwshPath -NoProfile -File (Join-Path $PackageRoot 'Install-Metro2033ReduxVR.ps1') -SteamRoot $disabledSteam -EpicManifestRoot $epicManifests -LocalAppDataRoot $localAppData3 -NonInteractive
+    Assert-True ($LASTEXITCODE -eq 1) 'Installer did not reject the discovered Epic installation.'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $game3 'Metro2033ReduxVR.install.json'))) 'Epic rejection created an install record.'
+    Assert-Setting (Read-All $config3) 'r_quality_level' '2' 'Epic rejection changed the Metro profile config.'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $game3 'd3d11.dll'))) 'Epic rejection changed the game folder.'
 
     # A clean Steam profile can be located before user.cfg exists by converting
     # Steam's most-recent 64-bit account ID to Metro's hexadecimal profile ID.
@@ -137,7 +138,7 @@ try {
     & (Join-Path $PackageRoot 'Uninstall-Metro2033ReduxVR.ps1') -SteamRoot $steamRoot4 -EpicManifestRoot $null -NonInteractive
     Assert-True (-not (Test-Path -LiteralPath $config4)) 'Uninstaller did not remove the installer-created Steam profile config.'
 
-    Write-Output 'Tester installer graphics enforcement, profile discovery, restoration, and storefront tests passed.'
+    Write-Output 'Tester installer graphics enforcement, profile discovery, restoration, and Epic rejection tests passed.'
 }
 finally {
     if (Test-Path -LiteralPath $resolvedTemp) {

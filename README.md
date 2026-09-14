@@ -15,13 +15,13 @@ Working areas include:
 - locomotion, snap/smooth turning, recentering, and configurable world scale
 - VR presentation for the main menu, HUD, journal, watch, lighter, charger, weapons, hands, and scopes
 - compatibility-oriented render resolution and frame-pacing controls
-- automatic Steam and Epic install discovery in the installer template
+- automatic Steam install discovery and explicit rejection of the incompatible Epic build
 
 Important limitations:
 
 - Rendering both eyes is expensive. A true single-pass stereo path is not finished.
 - NVIDIA GPUs are the most-tested path; AMD compatibility still needs real hardware testing.
-- The verified executable is Metro 2033 Redux 1.0.0.3 with SHA-256 `183EF65212E351C55A2832C3F3C8B04616B153697913D33B1E27683163F14E15`. Other storefront builds may work only if their executable matches or is separately validated.
+- The verified executable is the Steam release of Metro 2033 Redux 1.0.0.3 with SHA-256 `183EF65212E351C55A2832C3F3C8B04616B153697913D33B1E27683163F14E15`. The tested Epic Games Store version is incompatible and is rejected by the installer.
 - OpenVR is the supported runtime. The OpenXR backend is experimental and is not the normal launch path.
 - Some hardware combinations have reported distant-scene flicker, menu double vision, or unusually low performance that has not yet been reproduced consistently.
 - Known localized issues include gun-range-only aiming behavior and lower-view clipping on one sewer water effect.
