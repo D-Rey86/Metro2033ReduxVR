@@ -24,7 +24,7 @@ Important limitations:
 - The verified executable is the Steam release of Metro 2033 Redux 1.0.0.3 with SHA-256 `183EF65212E351C55A2832C3F3C8B04616B153697913D33B1E27683163F14E15`. The tested Epic Games Store version is incompatible and is rejected by the installer.
 - OpenVR is the supported runtime. The OpenXR backend is experimental and is not the normal launch path.
 - Some hardware combinations have reported distant-scene flicker, menu double vision, or unusually low performance that has not yet been reproduced consistently.
-- Known localized issues include gun-range-only aiming behavior and lower-view clipping on one sewer water effect.
+- Known localized issues include gun-range-only aiming behavior and lower-view clipping on some water effects.
 
 See [project status](docs/STATUS.md), [performance work](docs/PERFORMANCE.md), and [initial source provenance](docs/PROVENANCE.md) before starting a fix.
 
