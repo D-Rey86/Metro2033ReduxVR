@@ -10,11 +10,17 @@ $ErrorActionPreference = 'Stop'
 $expectedExeSha256 = '183EF65212E351C55A2832C3F3C8B04616B153697913D33B1E27683163F14E15'
 $backupRoot = $null
 $installed = New-Object System.Collections.Generic.List[object]
-$qualityChanged = $false
-$qualityConfigExisted = $false
-$qualitySettingExisted = $false
-$previousQualityValue = $null
-$qualityBackupPath = $null
+$graphicsConfigChanged = $false
+$graphicsConfigExisted = $false
+$graphicsBackupPath = $null
+$graphicsSettingsState = @()
+$requiredGraphicsSettings = @(
+    [pscustomobject]@{ Key = 'r_quality_level'; Value = '3'; Name = 'Quality'; DisplayValue = 'Medium' },
+    [pscustomobject]@{ Key = 'r_dx11_tess'; Value = '1'; Name = 'Tessellation'; DisplayValue = 'Very High' },
+    [pscustomobject]@{ Key = 'r_vsync'; Value = 'off'; Name = 'VSync'; DisplayValue = 'Off' },
+    [pscustomobject]@{ Key = 'r_supersample'; Value = '1'; Name = 'SSAA'; DisplayValue = 'Off' },
+    [pscustomobject]@{ Key = 'r_af_level'; Value = '1'; Name = 'Texture Filtering'; DisplayValue = '16x' }
+)
 
 . (Join-Path $PSScriptRoot 'StoreDiscovery.ps1')
 
@@ -49,8 +55,7 @@ function Read-TextFile([string]$path) {
     }
 }
 
-function Set-MetroQuality([string]$path, [string]$value) {
-    $linePattern = '(?m)^[ \t]*r_quality_level[ \t]+([^\s\r\n]+)[ \t]*(?=\r?$)'
+function Set-MetroGraphicsSettings([string]$path, [object[]]$settings) {
     if (Test-Path -LiteralPath $path -PathType Leaf) {
         $document = Read-TextFile $path
         $text = $document.Text
@@ -61,23 +66,38 @@ function Set-MetroQuality([string]$path, [string]$value) {
         $encoding = New-Object Text.UTF8Encoding($false)
     }
 
-    $matches = [regex]::Matches($text, $linePattern)
-    if ($matches.Count -gt 1) {
-        throw 'user.cfg contains more than one r_quality_level entry; no quality setting was changed.'
+    $newline = if ($text.Contains("`r`n")) { "`r`n" } else { "`n" }
+    $records = New-Object System.Collections.Generic.List[object]
+    foreach ($setting in $settings) {
+        $key = [string]$setting.Key
+        $value = [string]$setting.Value
+        $linePattern = "(?m)^[ \t]*$([regex]::Escape($key))[ \t]+([^\s\r\n]+)[ \t]*(?=\r?$)"
+        $settingMatches = [regex]::Matches($text, $linePattern)
+        if ($settingMatches.Count -gt 1) {
+            throw "user.cfg contains more than one $key entry; no graphics setting was changed."
+        }
+
+        $existed = $settingMatches.Count -eq 1
+        $previous = if ($existed) { $settingMatches[0].Groups[1].Value } else { $null }
+        $records.Add([pscustomobject]@{
+            key = $key
+            displayName = [string]$setting.Name
+            settingExistedBefore = $existed
+            previousValue = $previous
+            installedValue = $value
+        })
+
+        if ($existed) {
+            $text = [regex]::Replace($text, $linePattern, "$key $value")
+        }
+        else {
+            $prefix = if ($text.Length -gt 0 -and -not $text.EndsWith("`n")) { $newline } else { '' }
+            $text = $text + $prefix + "$key $value" + $newline
+        }
     }
 
-    $script:qualitySettingExisted = $matches.Count -eq 1
-    if ($script:qualitySettingExisted) {
-        $script:previousQualityValue = $matches[0].Groups[1].Value
-        $updated = [regex]::Replace($text, $linePattern, "r_quality_level $value")
-    }
-    else {
-        $newline = if ($text.Contains("`r`n")) { "`r`n" } else { "`n" }
-        $prefix = if ($text.Length -gt 0 -and -not $text.EndsWith("`n")) { $newline } else { '' }
-        $updated = $text + $prefix + "r_quality_level $value" + $newline
-    }
-
-    [IO.File]::WriteAllText($path, $updated, $encoding)
+    [IO.File]::WriteAllText($path, $text, $encoding)
+    return $records
 }
 
 try {
@@ -140,11 +160,11 @@ try {
     $backupRoot = Join-Path $GamePath "Metro2033ReduxVR_Backups\$stamp"
     New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
 
-    $qualityConfigPath = Join-Path $GamePath 'user.cfg'
-    $qualityConfigExisted = Test-Path -LiteralPath $qualityConfigPath -PathType Leaf
-    if ($qualityConfigExisted) {
-        $qualityBackupPath = Join-Path $backupRoot 'user.cfg.pre-install'
-        Copy-Item -LiteralPath $qualityConfigPath -Destination $qualityBackupPath -Force
+    $graphicsConfigPath = Join-Path $GamePath 'user.cfg'
+    $graphicsConfigExisted = Test-Path -LiteralPath $graphicsConfigPath -PathType Leaf
+    if ($graphicsConfigExisted) {
+        $graphicsBackupPath = Join-Path $backupRoot 'user.cfg.pre-install'
+        Copy-Item -LiteralPath $graphicsConfigPath -Destination $graphicsBackupPath -Force
     }
 
     foreach ($file in $payloadManifest.files) {
@@ -172,16 +192,21 @@ try {
         }
     }
 
-    # The validated VR routes depend on Metro's Medium shader package. Apply it
-    # before the first launch so an inherited Very High profile cannot make the
-    # opening 3D menu unusably slow or load incompatible shader variants.
-    $qualityChanged = $true
-    Set-MetroQuality -path $qualityConfigPath -value '3'
-    $installedQuality = [regex]::Match(
-        (Read-TextFile $qualityConfigPath).Text,
-        '(?m)^[ \t]*r_quality_level[ \t]+([^\s\r\n]+)[ \t]*(?=\r?$)')
-    if (-not $installedQuality.Success -or $installedQuality.Groups[1].Value -ne '3') {
-        throw 'Medium-quality verification failed after updating user.cfg.'
+    # Keep every tester on the renderer state used to validate the VR routes.
+    # Metro labels r_supersample=1 as SSAA Off and r_af_level=1 as 16x texture
+    # filtering; these values were confirmed from the game's persisted config.
+    $graphicsConfigChanged = $true
+    $graphicsSettingsState = @(Set-MetroGraphicsSettings -path $graphicsConfigPath -settings $requiredGraphicsSettings)
+    $installedConfigText = (Read-TextFile $graphicsConfigPath).Text
+    foreach ($setting in $requiredGraphicsSettings) {
+        $key = [string]$setting.Key
+        $expectedValue = [string]$setting.Value
+        $pattern = "(?m)^[ \t]*$([regex]::Escape($key))[ \t]+([^\s\r\n]+)[ \t]*(?=\r?$)"
+        $installedMatches = [regex]::Matches($installedConfigText, $pattern)
+        if ($installedMatches.Count -ne 1 -or
+            -not $installedMatches[0].Groups[1].Value.Equals($expectedValue, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "$($setting.Name) verification failed after updating user.cfg."
+        }
     }
 
     $installRecord = [ordered]@{
@@ -192,12 +217,10 @@ try {
         gamePath = $GamePath
         gameExeSha256 = $actualExeSha256
         backupDirectory = $backupRoot
-        qualitySetting = [ordered]@{
+        graphicsSettings = [ordered]@{
             configPath = 'user.cfg'
-            configExistedBefore = $qualityConfigExisted
-            settingExistedBefore = $qualitySettingExisted
-            previousValue = $previousQualityValue
-            installedValue = '3'
+            configExistedBefore = $graphicsConfigExisted
+            settings = @($graphicsSettingsState)
         }
         files = $installed
     }
@@ -208,7 +231,7 @@ try {
     Write-Host 'Metro2033ReduxVR installed successfully.' -ForegroundColor Green
     Write-Host "Game folder: $GamePath"
     Write-Host "Backup:     $backupRoot"
-    Write-Host 'Metro quality: Medium (required by this VR build)'
+    Write-Host 'Metro graphics: Medium quality, Very High tessellation, VSync Off, SSAA Off, 16x texture filtering'
     Write-Host ''
     Write-Host 'Start SteamVR first, then launch Metro 2033 Redux normally through your game launcher.'
     Write-Host 'Hold both stick clicks for about one second to open the VR menu.'
@@ -219,15 +242,15 @@ try {
 }
 catch {
     $failure = $_.Exception.Message
-    if ($qualityChanged -and $GamePath) {
-        $qualityConfigPath = Join-Path $GamePath 'user.cfg'
-        if ($qualityConfigExisted -and $qualityBackupPath -and
-            (Test-Path -LiteralPath $qualityBackupPath -PathType Leaf)) {
-            Copy-Item -LiteralPath $qualityBackupPath -Destination $qualityConfigPath -Force
+    if ($graphicsConfigChanged -and $GamePath) {
+        $graphicsConfigPath = Join-Path $GamePath 'user.cfg'
+        if ($graphicsConfigExisted -and $graphicsBackupPath -and
+            (Test-Path -LiteralPath $graphicsBackupPath -PathType Leaf)) {
+            Copy-Item -LiteralPath $graphicsBackupPath -Destination $graphicsConfigPath -Force
         }
-        elseif (-not $qualityConfigExisted -and
-            (Test-Path -LiteralPath $qualityConfigPath -PathType Leaf)) {
-            Remove-Item -LiteralPath $qualityConfigPath -Force
+        elseif (-not $graphicsConfigExisted -and
+            (Test-Path -LiteralPath $graphicsConfigPath -PathType Leaf)) {
+            Remove-Item -LiteralPath $graphicsConfigPath -Force
         }
     }
     if ($backupRoot -and $GamePath -and $installed.Count -gt 0) {

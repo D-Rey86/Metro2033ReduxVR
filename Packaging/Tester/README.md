@@ -17,7 +17,7 @@ The installer recognizes the verified Metro executable version 1.0.0.3 with SHA-
 3. Double-click `Install.cmd`.
 4. Start SteamVR, then launch Metro normally.
 
-The installer verifies the payload, backs up every replaced file, records the installation, and sets only Metro's master quality setting to the validated Medium preset. It does not replace saves or personal VR settings. An unrecognized `metro.exe` hash produces a warning and requires explicit confirmation.
+The installer verifies the payload, backs up every replaced file, records the installation, and applies the renderer combination used to validate the VR mod: Medium quality, Very High tessellation, VSync Off, SSAA Off, and 16x texture filtering. It does not replace saves or personal VR settings. An unrecognized `metro.exe` hash produces a warning and requires explicit confirmation.
 
 ## Controls
 
@@ -31,11 +31,10 @@ If controller actions do not match, select Controller Preset 3 in Metro's contro
 
 ## Uninstall
 
-Close Metro and double-click `Uninstall.cmd` from the same extracted package. The uninstaller removes files that still match the installed release and restores the prior Metro quality setting. It leaves independently modified files in place and reports them.
+Close Metro and double-click `Uninstall.cmd` from the same extracted package. The uninstaller removes files that still match the installed release and restores each prior Metro graphics setting. If a setting or installed file was changed afterward, the uninstaller leaves that newer value in place and reports it.
 
 ## Reporting
 
 Review logs for private path/system information before posting them. Include `d3d11_log.txt`, `vr_compatibility_log.txt`, hardware/runtime details, exact reproduction steps, and a short through-the-lens video for visual problems. Do not post unreviewed crash dumps publicly.
 
 See `TESTING-NOTES.md` for the regression checklist.
-

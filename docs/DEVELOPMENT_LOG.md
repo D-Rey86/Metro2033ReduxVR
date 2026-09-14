@@ -11661,3 +11661,32 @@ remaining basic gestures have been implemented.
   `A207B46E9949E23C2C6745C41CCBDF03B393AAB12083E6562846C47AD3037B38`.
   It was deployed only to the active tester install; the separate development
   copy remained unchanged.
+
+### Public tester configuration correction — 2026-09-13
+
+- Root cause: public pre-release `v0.1.0-test.1` packaged the generic
+  `ThirdParty/3Dmigoto/Dependencies/d3dx.ini` instead of the release-safe
+  runtime configuration. The shipped file had API-call logging, input logging,
+  NVAPI convergence/separation logging, shader hunting, and usage dumping
+  enabled. `hunting=1` selects `FrameAnalysisContext` and draws 3Dmigoto's
+  lime-green `Stereo disabled` line for legacy NVIDIA 3D Vision; that message
+  does not describe the mod's OpenVR stereo output. These development settings
+  can also add avoidable runtime overhead.
+- The tracked configuration now explicitly keeps actionable headset warnings
+  enabled while setting `calls`, `input`, `debug`, `unbuffered`, `convergence`,
+  `separation`, `hunting`, shader export, and usage-dump settings to their
+  release-safe values. `Packaging/Build-Package.ps1` validates every one before
+  creating an output directory and rejects a diagnostic-enabled runtime.
+- The tester installer now applies the complete Metro renderer combination used
+  for validation: `r_quality_level 3` (Medium), `r_dx11_tess 1` (Very High),
+  `r_vsync off`, `r_supersample 1` (SSAA Off), and `r_af_level 1` (16x texture
+  filtering). Metro exposes SSAA, not SMAA.
+- Each previous value is recorded independently. Uninstall restores only a
+  setting that still has the installer-applied value; a later user change is
+  preserved. Missing configurations, unrelated content, duplicate-key refusal,
+  failure rollback, and legacy `qualitySetting` uninstall records remain
+  supported.
+- PowerShell syntax parsing, release-configuration rejection/acceptance, and
+  disposable existing-config, missing-config, user-change, and Epic-discovery
+  install/uninstall cases pass. The runtime DLL and shader binaries are
+  unchanged; a corrected public archive has not yet been published.

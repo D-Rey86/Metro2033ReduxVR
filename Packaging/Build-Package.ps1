@@ -25,6 +25,46 @@ if (-not (Test-Path -LiteralPath $templateRoot -PathType Container)) {
     throw "Installer template is missing: $templateRoot"
 }
 
+function Get-IniSettingValues([string]$text, [string]$section, [string]$key) {
+    $currentSection = ''
+    $values = New-Object System.Collections.Generic.List[string]
+    $escapedKey = [regex]::Escape($key)
+    foreach ($line in [regex]::Split($text, '\r?\n')) {
+        if ($line -match '^\s*\[([^\]]+)\]\s*(?:;.*)?$') {
+            $currentSection = $matches[1].Trim()
+            continue
+        }
+        if ($currentSection -ieq $section -and
+            $line -match "^\s*$escapedKey\s*=\s*([^;]*?)\s*(?:;.*)?$") {
+            $values.Add($matches[1].Trim())
+        }
+    }
+    return @($values)
+}
+
+function Assert-ReleaseConfiguration([string]$path) {
+    $text = Get-Content -LiteralPath $path -Raw
+    $requirements = @(
+        @{ Section = 'Logging'; Key = 'calls'; Value = '0' },
+        @{ Section = 'Logging'; Key = 'input'; Value = '0' },
+        @{ Section = 'Logging'; Key = 'debug'; Value = '0' },
+        @{ Section = 'Logging'; Key = 'unbuffered'; Value = '0' },
+        @{ Section = 'Logging'; Key = 'convergence'; Value = '0' },
+        @{ Section = 'Logging'; Key = 'separation'; Value = '0' },
+        @{ Section = 'Hunting'; Key = 'hunting'; Value = '0' },
+        @{ Section = 'Rendering'; Key = 'export_fixed'; Value = '0' },
+        @{ Section = 'Rendering'; Key = 'export_shaders'; Value = '0' },
+        @{ Section = 'Rendering'; Key = 'export_hlsl'; Value = '0' },
+        @{ Section = 'Rendering'; Key = 'dump_usage'; Value = '0' }
+    )
+    foreach ($requirement in $requirements) {
+        $values = @(Get-IniSettingValues -text $text -section $requirement.Section -key $requirement.Key)
+        if ($values.Count -ne 1 -or $values[0] -ne $requirement.Value) {
+            throw "Release package rejected: [$($requirement.Section)] $($requirement.Key) must appear exactly once with value $($requirement.Value) in d3dx.ini."
+        }
+    }
+}
+
 $requiredFiles = @(
     'd3d11.dll',
     'd3dx.ini',
@@ -45,6 +85,12 @@ foreach ($relativePath in $requiredFiles) {
         throw "Required runtime file is missing: $relativePath"
     }
 }
+
+# A tester package must never inherit 3Dmigoto's development defaults. Besides
+# drawing the legacy green stereo overlay, API logging and shader hunting select
+# substantially heavier runtime paths. Reject the package before creating any
+# output if the supplied runtime configuration is not release-safe.
+Assert-ReleaseConfiguration -path (Join-Path $runtimeRoot 'd3dx.ini')
 
 New-Item -ItemType Directory -Path $outputRoot | Out-Null
 Copy-Item -Path (Join-Path $templateRoot '*') -Destination $outputRoot -Recurse
@@ -89,4 +135,3 @@ Copy-Item -LiteralPath (Join-Path $repositoryRoot 'ThirdParty\openvr\LICENSE') -
 
 Write-Host "Created verified package directory: $outputRoot"
 Write-Host 'Inspect and test this directory before creating a public archive.'
-

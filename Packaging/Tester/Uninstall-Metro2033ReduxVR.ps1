@@ -73,6 +73,52 @@ function Restore-MetroQuality([string]$path, $quality, $warnings) {
     [IO.File]::WriteAllText($path, $updated, $document.Encoding)
 }
 
+function Restore-MetroGraphicsSettings([string]$path, $graphics, $warnings) {
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        if ([bool]$graphics.configExistedBefore) {
+            $warnings.Add('Could not restore the previous Metro graphics settings: user.cfg is missing.')
+        }
+        return
+    }
+
+    $document = Read-TextFile $path
+    $updated = $document.Text
+    foreach ($setting in @($graphics.settings)) {
+        $key = [string]$setting.key
+        $name = [string]$setting.displayName
+        if (-not $name) { $name = $key }
+        $linePattern = "(?m)^[ \t]*$([regex]::Escape($key))[ \t]+([^\s\r\n]+)[ \t]*(?=\r?$)"
+        $settingMatches = [regex]::Matches($updated, $linePattern)
+        if ($settingMatches.Count -ne 1) {
+            $warnings.Add("Kept $name unchanged because its $key entry is missing or ambiguous.")
+            continue
+        }
+        if (-not $settingMatches[0].Groups[1].Value.Equals(
+            [string]$setting.installedValue, [StringComparison]::OrdinalIgnoreCase)) {
+            $warnings.Add("Kept the current $name because it was changed after installing the mod.")
+            continue
+        }
+
+        if ([bool]$setting.settingExistedBefore) {
+            $updated = [regex]::Replace(
+                $updated, $linePattern,
+                "$key $([string]$setting.previousValue)")
+        }
+        else {
+            $removePattern = "(?m)^[ \t]*$([regex]::Escape($key))[ \t]+[^\r\n]*(?:\r?\n|$)"
+            $updated = (New-Object Text.RegularExpressions.Regex($removePattern)).Replace(
+                $updated, '', 1)
+        }
+    }
+
+    if (-not [bool]$graphics.configExistedBefore -and -not $updated.Trim()) {
+        Remove-Item -LiteralPath $path -Force
+    }
+    else {
+        [IO.File]::WriteAllText($path, $updated, $document.Encoding)
+    }
+}
+
 try {
     if (Get-Process -Name metro -ErrorAction SilentlyContinue) {
         Finish 'Metro 2033 Redux is running. Close the game, then run the uninstaller again.' Red 1
@@ -117,7 +163,11 @@ try {
         }
     }
 
-    if ($record.PSObject.Properties.Name -contains 'qualitySetting') {
+    if ($record.PSObject.Properties.Name -contains 'graphicsSettings') {
+        $graphicsPath = Join-Path $GamePath ([string]$record.graphicsSettings.configPath)
+        Restore-MetroGraphicsSettings -path $graphicsPath -graphics $record.graphicsSettings -warnings $warnings
+    }
+    elseif ($record.PSObject.Properties.Name -contains 'qualitySetting') {
         $qualityPath = Join-Path $GamePath ([string]$record.qualitySetting.configPath)
         Restore-MetroQuality -path $qualityPath -quality $record.qualitySetting -warnings $warnings
     }

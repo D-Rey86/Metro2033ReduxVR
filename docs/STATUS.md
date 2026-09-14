@@ -23,7 +23,7 @@ chronological; later entries and current source supersede earlier candidates.
 - resolution scaling, world/IPD controls, comfort turning, recentering, brightness, HUD, scope, and placement settings
 - main-menu/scripted-scene state separation fixes
 - shader and depth handling for several decal, lighting, culling, and pre-rendered-video problems
-- clean-install-oriented installer with executable verification, automatic Steam/Epic discovery, backups, manifest validation, and uninstall records
+- clean-install-oriented installer with executable verification, automatic Steam/Epic discovery, backups, manifest validation, uninstall records, release-safe 3Dmigoto validation, and enforcement of the tested Metro graphics combination
 
 ## Unresolved or incompletely validated
 

@@ -15,6 +15,13 @@ Please exercise at least the following:
 7. Weapon vendor, scripted camera scenes, Defense, Market, Armory, and Archives.
 8. VR-menu changes followed by a complete game restart.
 9. Frame pacing with Expanded Visibility enabled and disabled.
+10. Confirm Metro reports Medium quality, Very High tessellation, VSync Off,
+    SSAA Off, and 16x texture filtering after installation.
+
+The desktop mirror must not show 3Dmigoto's green shader-hunting overlay or a
+green `Stereo disabled` line. That text refers to legacy NVIDIA 3D Vision, not
+the OpenVR output, and indicates that a development configuration was packaged
+by mistake.
 
 If performance becomes persistently lower than an earlier run, close Metro and
 restart SteamVR before comparing settings. One controlled development session
