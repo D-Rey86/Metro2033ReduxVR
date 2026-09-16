@@ -76,6 +76,7 @@
 #include "StereoCensus.h"
 #include "StereoTwin.h"
 #include "StereoSinglePass.h"
+#include "VRPerf.h"
 
 
 // -----------------------------------------------------------------------------
@@ -560,6 +561,11 @@ STDMETHODIMP HackerSwapChain::Present(THIS_
 	LogDebug("  SyncInterval = %d\n", SyncInterval);
 	LogDebug("  Flags = %d\n", Flags);
 
+	const bool vrPerfFrame = !(Flags & DXGI_PRESENT_TEST) && mHackerDevice;
+	if (vrPerfFrame)
+		VRPerf::BeginPresent(mHackerDevice->GetPassThroughOrigDevice1(),
+			mHackerDevice->GetPassThroughOrigContext1());
+
 	if (!(Flags & DXGI_PRESENT_TEST)) {
 		// Profiling::mode may change below, so make a copy
 		profiling = Profiling::mode == Profiling::Mode::SUMMARY;
@@ -573,6 +579,8 @@ STDMETHODIMP HackerSwapChain::Present(THIS_
 		if (profiling)
 			Profiling::end(&profiling_state, &Profiling::present_overhead);
 	}
+	if (vrPerfFrame)
+		VRPerf::Stamp(VRPerf::kAfterFrameActions);
 
 	// Metro2033ReduxVR milestone 2: hand the finished frame to the
 	// OpenVR compositor. Deliberately BEFORE the real Present - the back
@@ -585,6 +593,8 @@ STDMETHODIMP HackerSwapChain::Present(THIS_
 	// next frame's targets, a frame late.
 	if (mHackerContext)
 		mHackerContext->DrawVRMenuAtFrameEnd();
+	if (vrPerfFrame)
+		VRPerf::Stamp(VRPerf::kAfterVRMenu);
 	if (mHackerContext)
 		mHackerContext->FlushSecondEye();
 
@@ -593,11 +603,21 @@ STDMETHODIMP HackerSwapChain::Present(THIS_
 	// one frame with some passes doubled and some not.
 	if (StereoTwin::ApplyPendingStereoModeToggle() && mHackerContext)
 		mHackerContext->ResetStereoModeState();
+	if (vrPerfFrame)
+		VRPerf::Stamp(VRPerf::kAfterFlushSecondEye);
 
+	// No frame of ours this time (occluded/minimised polling): do not leave
+	// the head-locked UI-layer quad showing a stale menu.
+	if ((Flags & DXGI_PRESENT_TEST) || !mHackerDevice || !mHackerContext)
+		VRPose::HideUILayerOverlay();
 	if (!(Flags & DXGI_PRESENT_TEST) && mHackerDevice) {
 		VRPose::SubmitFrameToCompositor(mOrigSwapChain1,
 			mHackerDevice->GetPassThroughOrigDevice1(),
 			mHackerDevice->GetPassThroughOrigContext1());
+		// The late-2D UI layer of this frame (non-gameplay screens) goes to its
+		// own compositor quad; must run before the overlay redirect is reset.
+		if (mHackerContext)
+			mHackerContext->PresentUILayer();
 		if (mHackerContext)
 			mHackerContext->EndHighResolutionOverlayFrame();
 
@@ -605,12 +625,34 @@ STDMETHODIMP HackerSwapChain::Present(THIS_
 		// drawn from that eye's viewpoint. Must come after submission,
 		// which needs to know which eye the frame just drawn belongs to.
 		VRPose::AdvanceStereoEye();
+		VRPerf::Stamp(VRPerf::kAfterSubmit);
 
 		// Development-only performance telemetry. None of these calls contributes
 		// to rendering: they collect a render graph, issue GPU timestamp queries,
 		// aggregate counters, and write periodic reports. Leaving them active in a
 		// gameplay build adds driver/query and synchronous log activity precisely
 		// on the Present boundary, where it can become a visible hitch.
+		// Cheap enough to leave on: it sums counters the draw path already
+		// increments and formats one line every 600 frames, for the profiler
+		// summary. Without it "folded 0" has no explanation.
+		if (const char *singlePassStats = StereoSinglePass::ReportFrameStats())
+			VRPerf::Note(singlePassStats);
+		// Which of our own sites the doubled draws' constant-buffer calls go to.
+		if (const char *eyeCBCensus = StereoTwin::ReportEyeCBCensus())
+			VRPerf::Note(eyeCBCensus);
+		if (const char *mapSplit = StereoTwin::ReportMapSplit())
+			VRPerf::Note(mapSplit);
+		if (const char *unmapSections = StereoTwin::ReportUnmapSections())
+			VRPerf::Note(unmapSections);
+		if (const char *hookSites = VRPerf::ReportSites())
+			VRPerf::Note(hookSites);
+		if (const char *drawSections = StereoTwin::ReportDrawSections())
+			VRPerf::Note(drawSections);
+		if (const char *shaderCreation = StereoSinglePass::ReportShaderCreation())
+			VRPerf::Note(shaderCreation);
+		if (const char *foldPolicy = StereoSinglePass::ReportFoldPolicy())
+			VRPerf::Note(foldPolicy);
+
 		static const bool kPerformanceTelemetryEnabled = false;
 		if (kPerformanceTelemetryEnabled) {
 			StereoCensus::EndFrame();
@@ -620,7 +662,9 @@ STDMETHODIMP HackerSwapChain::Present(THIS_
 				mHackerDevice->GetPassThroughOrigDevice1(),
 				mHackerDevice->GetPassThroughOrigContext1());
 			ReportEyeCBCost();
-			StereoSinglePass::ReportFrameStats();
+			// NOT ReportFrameStats() again: it is called unconditionally above,
+			// and a second call per frame would zero the accumulator twice and
+			// halve every rate it prints.
 			StereoSinglePass::ReportPatchStats();
 		}
 	}
@@ -628,12 +672,16 @@ STDMETHODIMP HackerSwapChain::Present(THIS_
 	get_tls()->hooking_quirk_protection = true; // Present may call D3D11CreateDevice, which we may have hooked
 	HRESULT hr = mOrigSwapChain1->Present(SyncInterval, Flags);
 	get_tls()->hooking_quirk_protection = false;
+	if (vrPerfFrame)
+		VRPerf::Stamp(VRPerf::kAfterDxgiPresent);
 
 	if (!(Flags & DXGI_PRESENT_TEST)) {
 		// OpenVR defines WaitGetPoses as the start of the next frame. Calling it
 		// here, immediately after the companion-window Present, preserves scene
 		// focus without blocking Metro before its completed frame is presented.
 		VRPose::WaitForCompositorFrame();
+		if (vrPerfFrame)
+			VRPerf::Stamp(VRPerf::kAfterWaitGetPoses);
 		if (profiling)
 			Profiling::start(&profiling_state);
 
@@ -662,6 +710,8 @@ STDMETHODIMP HackerSwapChain::Present(THIS_
 			VRPose::RunFireCodeCoverage();
 		}
 		VRPose::ArmFireProbe();
+		if (vrPerfFrame)
+			VRPerf::Stamp(VRPerf::kAfterStereoParams);
 		// Poll first so the culling camera chases the pose that will be used
 		// to render the next frame.  Updating culling before UpdateVRPose left
 		// it targeting the previous HMD sample, adding a full frame of avoidable
@@ -669,13 +719,23 @@ STDMETHODIMP HackerSwapChain::Present(THIS_
 		// frustum that one-frame offset is enough to expose an empty band at the
 		// leading edge of the much wider VR view.
 		VRPose::UpdateVRPose();
+		if (vrPerfFrame)
+			VRPerf::Stamp(VRPerf::kAfterUpdatePose);
 		VRPose::ForceWideCullingFov();
 		VRPose::UpdateCullingFollow();
+		if (vrPerfFrame)
+			VRPerf::Stamp(VRPerf::kAfterCulling);
 		VRPose::UpdateControllerInput();
 		VRPose::UpdateMotionAiming();
 		VRPose::ApplyAimOverride();
+		// Decide whether the frame about to be rendered is a 2D "cinema"
+		// presentation (main menu, loading screen); if so the VR camera is
+		// suspended for it and the result goes to a room-fixed screen.
+		VRPose::UpdateCinemaFrame();
 		if (kRuntimeDiagnosticsEnabled)
 			VRPose::RunAimWriteTest();
+		if (vrPerfFrame)
+			VRPerf::Stamp(VRPerf::kAfterInputAndAim);
 		if (mHackerContext)
 			mHackerContext->ResetVRInstanceXformFrameTracking();
 
@@ -685,6 +745,8 @@ STDMETHODIMP HackerSwapChain::Present(THIS_
 		// state changed in the pre-present command list, or to perform some
 		// action at the start of a frame:
 		RunCommandList(mHackerDevice, mHackerContext, &G->post_present_command_list, NULL, true);
+		if (vrPerfFrame)
+			VRPerf::EndPresent();
 
 		if (profiling)
 			Profiling::end(&profiling_state, &Profiling::present_overhead);

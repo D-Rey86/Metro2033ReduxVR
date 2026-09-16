@@ -205,6 +205,55 @@ namespace {
 	bool sVideoOverlayVisible = false;
 	vr::VROverlayHandle_t sMenuOverlay = vr::k_ulOverlayHandleInvalid;
 	bool sMenuOverlayVisible = false;
+	vr::VROverlayHandle_t sPerfOverlay = vr::k_ulOverlayHandleInvalid;
+	bool sPerfOverlayVisible = false;
+
+	// A flat screen fixed in the room: `distance` metres ahead of where the head
+	// is looking at this moment, gravity-levelled (yaw only), at eye height plus
+	// `heightOffset`. Captured when the screen appears and then left alone, so
+	// it stays put like a cinema screen instead of swimming with every head
+	// movement. Poses are in the standing universe, which is also the
+	// compositor's tracking space (SubmitFrameToCompositor sets it).
+	bool BuildRoomFixedOverlayTransform(float distance, float heightOffset,
+		vr::HmdMatrix34_t *out)
+	{
+		if (!sLastPolledPoseValid || !out)
+			return false;
+		const vr::HmdMatrix34_t &h = sLastPolledPose;
+		float fx = -h.m[0][2], fz = -h.m[2][2];
+		const float len = sqrtf(fx * fx + fz * fz);
+		if (len < 0.2f)
+			return false;   // looking nearly straight up or down: no stable heading
+		fx /= len;
+		fz /= len;
+		// Columns: right, up, back. The quad's visible face points back at the viewer.
+		const vr::HmdMatrix34_t m = {{
+			{ -fz, 0.0f, -fx, h.m[0][3] + fx * distance },
+			{ 0.0f, 1.0f, 0.0f, h.m[1][3] + heightOffset },
+			{ fx, 0.0f, -fz, h.m[2][3] + fz * distance }
+		}};
+		*out = m;
+		return true;
+	}
+
+	// Anchors `handle` in the room if the head pose allows it, otherwise falls
+	// back to the previous head-relative placement.
+	void PlaceOverlayInRoom(vr::IVROverlay *overlay, vr::VROverlayHandle_t handle,
+		float distance, float heightOffset)
+	{
+		vr::HmdMatrix34_t roomFixed;
+		if (BuildRoomFixedOverlayTransform(distance, heightOffset, &roomFixed)) {
+			overlay->SetOverlayTransformAbsolute(handle, vr::TrackingUniverseStanding, &roomFixed);
+			return;
+		}
+		const vr::HmdMatrix34_t hmdToOverlay = {{
+			{ 1.0f, 0.0f, 0.0f, 0.0f },
+			{ 0.0f, 1.0f, 0.0f, heightOffset },
+			{ 0.0f, 0.0f, 1.0f, -distance }
+		}};
+		overlay->SetOverlayTransformTrackedDeviceRelative(handle,
+			vr::k_unTrackedDeviceIndex_Hmd, &hmdToOverlay);
+	}
 
 	void HideVideoOverlay()
 	{
@@ -269,6 +318,9 @@ namespace {
 			return false;
 		}
 		if (!sVideoOverlayVisible) {
+			// Theatre screen: fixed in the room where the player is looking when
+			// the video starts, rather than locked to the head.
+			PlaceOverlayInRoom(overlay, sVideoOverlay, 2.0f, 0.0f);
 			err = overlay->ShowOverlay(sVideoOverlay);
 			if (err != vr::VROverlayError_None) {
 				LogInfo("VRPose video overlay: ShowOverlay failed (%d)\n", err);
@@ -324,6 +376,8 @@ namespace {
 			overlay->SetOverlayAlpha(sMenuOverlay, 1.0f);
 			overlay->SetOverlayFlag(sMenuOverlay,
 				vr::VROverlayFlags_IgnoreTextureAlpha, true);
+			// Above Metro's 2D layer (5), below the performance HUD (10).
+			overlay->SetOverlaySortOrder(sMenuOverlay, 8);
 			LogInfo("VRPose menu overlay: initialized as dedicated 2048-square head-relative quad\n");
 		}
 
@@ -341,6 +395,8 @@ namespace {
 			return false;
 		}
 		if (!sMenuOverlayVisible) {
+			// Re-anchored in the room each time the menu opens.
+			PlaceOverlayInRoom(overlay, sMenuOverlay, 2.0f, 0.0f);
 			err = overlay->ShowOverlay(sMenuOverlay);
 			if (err != vr::VROverlayError_None) {
 				LogInfo("VRPose menu overlay: ShowOverlay failed (%d)\n", err);
@@ -1325,6 +1381,189 @@ namespace VRPose {
 		return ShowMenuOverlay(texture);
 	}
 
+	static volatile LONG sTraceFrames = 4;   // the first frames of every session
+	static volatile LONG sSuccessfulSubmits = 0;
+
+	void TraceStep(const char *step)
+	{
+		if (InterlockedCompareExchange(&sTraceFrames, 0, 0) <= 0)
+			return;
+		CompatibilityLog("trace frame=%u tid=%lu step=%s\n",
+			G ? G->frame_no : 0u, GetCurrentThreadId(), step);
+	}
+
+	void TraceFrameEnd()
+	{
+		if (InterlockedCompareExchange(&sTraceFrames, 0, 0) > 0)
+			InterlockedDecrement(&sTraceFrames);
+	}
+
+	void ArmTrace(const char *reason, int frames)
+	{
+		CompatibilityLog("trace armed: %s\n", reason);
+		InterlockedExchange(&sTraceFrames, frames);
+	}
+
+	unsigned SuccessfulCompositorFrames()
+	{
+		return (unsigned)InterlockedCompareExchange(&sSuccessfulSubmits, 0, 0);
+	}
+
+	void HidePerfOverlay()
+	{
+		if (!sPerfOverlayVisible || sPerfOverlay == vr::k_ulOverlayHandleInvalid)
+			return;
+		vr::IVROverlay *overlay = vr::VROverlay();
+		if (overlay)
+			overlay->HideOverlay(sPerfOverlay);
+		sPerfOverlayVisible = false;
+	}
+
+	bool PresentPerfOverlay(ID3D11Texture2D *texture, bool contentChanged)
+	{
+		if (!texture)
+			return false;
+		vr::IVROverlay *overlay = vr::VROverlay();
+		if (!overlay)
+			return false;
+
+		if (sPerfOverlay == vr::k_ulOverlayHandleInvalid) {
+			vr::EVROverlayError err = overlay->CreateOverlay(
+				"metro2033reduxvr.perf_hud", "Metro 2033 Redux VR performance", &sPerfOverlay);
+			if (err == vr::VROverlayError_KeyInUse)
+				err = overlay->FindOverlay("metro2033reduxvr.perf_hud", &sPerfOverlay);
+			if (err != vr::VROverlayError_None || sPerfOverlay == vr::k_ulOverlayHandleInvalid) {
+				LogInfo("VRPerf HUD overlay: creation failed (%d)\n", err);
+				sPerfOverlay = vr::k_ulOverlayHandleInvalid;
+				return false;
+			}
+			// Head-relative, below and left of the line of sight, tilted 20
+			// degrees up to face the eyes so it reads without looking straight at it.
+			const float c = 0.9397f, s = 0.3420f;
+			const vr::HmdMatrix34_t hmdToOverlay = {{
+				{ 1.0f, 0.0f, 0.0f, -0.22f },
+				{ 0.0f, c, s, -0.30f },
+				{ 0.0f, -s, c, -1.20f }
+			}};
+			overlay->SetOverlayTransformTrackedDeviceRelative(sPerfOverlay,
+				vr::k_unTrackedDeviceIndex_Hmd, &hmdToOverlay);
+			overlay->SetOverlayWidthInMeters(sPerfOverlay, 0.80f);
+			overlay->SetOverlayAlpha(sPerfOverlay, 1.0f);
+			overlay->SetOverlaySortOrder(sPerfOverlay, 10);
+			contentChanged = true;
+			ArmTrace("perf-hud first show", 4);
+		}
+
+		if (contentChanged || !sPerfOverlayVisible) {
+			vr::Texture_t overlayTexture = {};
+			overlayTexture.handle = texture;
+			overlayTexture.eType = vr::TextureType_DirectX;
+			overlayTexture.eColorSpace = vr::ColorSpace_Auto;
+			if (overlay->SetOverlayTexture(sPerfOverlay, &overlayTexture) != vr::VROverlayError_None) {
+				HidePerfOverlay();
+				return false;
+			}
+		}
+		if (!sPerfOverlayVisible) {
+			if (overlay->ShowOverlay(sPerfOverlay) != vr::VROverlayError_None)
+				return false;
+			sPerfOverlayVisible = true;
+		}
+		return true;
+	}
+
+	// Metro's post-scene 2D on non-gameplay screens (press-any-key prompt, main
+	// menu, chapter select), captured once into an untwinned transparent layer
+	// by HackerContext and shown as ONE quad for both eyes - the S.T.A.L.K.E.R.
+	// VR UI approach. Identical 2D coordinates submitted in both scene eyes
+	// cannot fuse through the two asymmetric eye frusta; a compositor quad can.
+	static vr::VROverlayHandle_t sUILayerOverlay = vr::k_ulOverlayHandleInvalid;
+	static bool sUILayerOverlayVisible = false;
+	// Latched once the quad cannot be created or keeps being refused: from then
+	// on the late 2D stays in the eye images (see IsUILayerScreen).
+	static bool sUILayerOverlayFailed = false;
+	static int sUILayerOverlayFailures = 0;
+	// Set by SubmitFrameToCompositor; read by UpdateCinemaFrame on the same thread.
+	static bool sCompositorGivenUp = false;
+	static bool sLastSubmitAccepted = false;
+
+	static void NoteUILayerOverlayFailure()
+	{
+		if (++sUILayerOverlayFailures >= 30 && !sUILayerOverlayFailed) {
+			sUILayerOverlayFailed = true;
+			CompatibilityLog("ui_layer=disabled consecutive_overlay_failures=%d\n",
+				sUILayerOverlayFailures);
+		}
+	}
+
+	void HideUILayerOverlay()
+	{
+		if (!sUILayerOverlayVisible || sUILayerOverlay == vr::k_ulOverlayHandleInvalid)
+			return;
+		vr::IVROverlay *overlay = vr::VROverlay();
+		if (overlay)
+			overlay->HideOverlay(sUILayerOverlay);
+		sUILayerOverlayVisible = false;
+	}
+
+	bool PresentUILayerOverlay(ID3D11Texture2D *texture)
+	{
+		if (!texture || sUILayerOverlayFailed)
+			return false;
+		vr::IVROverlay *overlay = vr::VROverlay();
+		if (!overlay)
+			return false;
+		if (sUILayerOverlay == vr::k_ulOverlayHandleInvalid) {
+			vr::EVROverlayError err = overlay->CreateOverlay(
+				"metro2033reduxvr.ui_layer", "Metro 2033 Redux VR 2D layer", &sUILayerOverlay);
+			if (err == vr::VROverlayError_KeyInUse)
+				err = overlay->FindOverlay("metro2033reduxvr.ui_layer", &sUILayerOverlay);
+			if (err != vr::VROverlayError_None || sUILayerOverlay == vr::k_ulOverlayHandleInvalid) {
+				LogInfo("VRPose UI layer overlay: creation failed (%d)\n", err);
+				CompatibilityLog("ui_layer=overlay-failed error=%d\n", (int)err);
+				sUILayerOverlay = vr::k_ulOverlayHandleInvalid;
+				sUILayerOverlayFailed = true;
+				return false;
+			}
+			// Head-relative 2 m ahead, 2.4 m wide (about 62 degrees): Metro's
+			// full-screen 2D layout at a comfortable distance. The layer holds
+			// premultiplied colour plus coverage (see UILayerBlendVariant).
+			const vr::HmdMatrix34_t hmdToOverlay = {{
+				{ 1.0f, 0.0f, 0.0f, 0.0f },
+				{ 0.0f, 1.0f, 0.0f, 0.0f },
+				{ 0.0f, 0.0f, 1.0f, -2.0f }
+			}};
+			overlay->SetOverlayTransformTrackedDeviceRelative(sUILayerOverlay,
+				vr::k_unTrackedDeviceIndex_Hmd, &hmdToOverlay);
+			overlay->SetOverlayWidthInMeters(sUILayerOverlay, 2.4f);
+			overlay->SetOverlayAlpha(sUILayerOverlay, 1.0f);
+			overlay->SetOverlayFlag(sUILayerOverlay, vr::VROverlayFlags_IsPremultiplied, true);
+			overlay->SetOverlaySortOrder(sUILayerOverlay, 5);
+			CompatibilityLog("ui_layer=overlay-created\n");
+		}
+		vr::Texture_t overlayTexture = {};
+		overlayTexture.handle = texture;
+		overlayTexture.eType = vr::TextureType_DirectX;
+		overlayTexture.eColorSpace = vr::ColorSpace_Auto;
+		if (overlay->SetOverlayTexture(sUILayerOverlay, &overlayTexture) != vr::VROverlayError_None) {
+			HideUILayerOverlay();
+			NoteUILayerOverlayFailure();
+			return false;
+		}
+		if (!sUILayerOverlayVisible) {
+			if (overlay->ShowOverlay(sUILayerOverlay) != vr::VROverlayError_None) {
+				NoteUILayerOverlayFailure();
+				return false;
+			}
+			sUILayerOverlayVisible = true;
+			static int sShowLogs = 0;
+			if (sShowLogs++ < 20)
+				CompatibilityLog("ui_layer=visible frame=%u\n", G ? G->frame_no : 0u);
+		}
+		sUILayerOverlayFailures = 0;
+		return true;
+	}
+
 	static volatile LONG sFullscreenVideoFrame = -1;
 	static volatile LONG sPauseMenuExpected = 0;
 	static volatile LONG sLoadingScreenFrame = -1000;
@@ -1350,6 +1589,167 @@ namespace VRPose {
 	void NotifyLoadingScreenDraw(unsigned frame)
 	{
 		InterlockedExchange(&sLoadingScreenFrame, (LONG)frame);
+	}
+
+	static volatile LONG sCinemaFrameActive = 0;
+	// Cinema held by a load's closing panel while the level already renders.
+	static volatile LONG sCinemaPanelHold = 0;
+	static bool sMainMenuSeen = false;
+	static volatile LONG sSceneRenderedFrame = -1000;
+	static volatile LONG sGBufferFrame = -1000;
+	static volatile LONG sNativeMenuModeCached = -1;
+
+	void NotifySceneRendered(unsigned frame)
+	{
+		InterlockedExchange(&sSceneRenderedFrame, (LONG)frame);
+	}
+
+	void NotifyGBufferRendered(unsigned frame)
+	{
+		InterlockedExchange(&sGBufferFrame, (LONG)frame);
+	}
+
+	static bool ReadNativeMenuMode(int *mode, int *previous);
+
+	// Frames since a stamp was published, clamped (999 = never / long ago).
+	static unsigned StampAge(volatile LONG *stamp)
+	{
+		const LONG frame = InterlockedCompareExchange(stamp, -1000, -1000);
+		if (frame < 0 || !G)
+			return 999;
+		const unsigned age = G->frame_no - (unsigned)frame;
+		return age > 999 ? 999 : age;
+	}
+
+	static volatile LONG sUILayerScreen = 0;
+	static bool sGBufferEverSeen = false;
+
+	void UpdateCinemaFrame()
+	{
+		// Runs after Present N and decides for frame N+1; a stamp published
+		// while frame N was drawn is therefore 1 old here.
+		int mode = -1, previous = -1;
+		ReadNativeMenuMode(&mode, &previous);
+		InterlockedExchange(&sNativeMenuModeCached, mode);
+		const bool introBefore = !sMainMenuSeen;   // for the UI-layer rule below
+		if (mode == 1)
+			sMainMenuSeen = true;
+		const unsigned panelAge = StampAge(&sLoadingScreenFrame);
+		const unsigned gbufAge = StampAge(&sGBufferFrame);
+		const unsigned sceneAge = StampAge(&sSceneRenderedFrame);
+		const bool gameplay = IsGameplayModeActive();
+		// Only a real, lit 3D scene fills Metro's deferred G-buffer. A frame
+		// without it is a 2D screen when the loading panel is up, when the front
+		// end (mode 1) has stopped drawing its room - a level load and its
+		// briefing - or before the main menu or gameplay have ever appeared.
+		// The panel shader alone is NOT a loading signal: it also draws the
+		// "press any button" prompt over the live 3D fly-through, which keeps
+		// its G-buffer and stays in stereo. Cinema ends on the first frame that
+		// fills the G-buffer again, so the level's first frames are stereo.
+		const bool noScene = gbufAge > 1;
+		if (!noScene)
+			sGBufferEverSeen = true;
+		const bool panelUp = panelAge <= 3;
+		const bool wasCinemaBefore = InterlockedCompareExchange(&sCinemaFrameActive, 0, 0) != 0;
+		// Frames of the current panel run spent without a 3D scene: a real load.
+		static unsigned sPanelNoSceneFrames = 0;
+		if (!panelUp)
+			sPanelNoSceneFrames = 0;
+		else if (noScene)
+			sPanelNoSceneFrames++;
+		const bool baseCinema = noScene &&
+			(panelUp || mode == 1 || (!gameplay && !sMainMenuSeen));
+		// The end of a load ("press any button") already renders the level
+		// underneath - the G-buffer is back - while the loading panel still
+		// covers the screen: keep the theatre until that panel goes away. Only
+		// after a real load (the panel up without a scene for 10+ frames), so
+		// the prompt over the start-up fly-through stays in stereo.
+		const bool panelHold = !baseCinema && wasCinemaBefore && panelUp &&
+			sPanelNoSceneFrames >= 10;
+		const bool cinema = baseCinema || panelHold;
+		InterlockedExchange(&sCinemaPanelHold, panelHold ? 1 : 0);
+
+		// Late-2D UI layer for the next frame (HackerContext::ActivateUILayer):
+		// a non-gameplay 3D screen whose 2D an OpenVR quad can actually show.
+		// Without one (OpenXR, no HMD, compositor given up, overlay refused,
+		// frames not accepted) the 2D stays in the eye images as before. The
+		// menu mode must hold for two Presents and cinema must have ended 8
+		// frames ago, so the first frames of a level - the mode byte trails the
+		// load - never capture the gameplay HUD. The start-up term uses the
+		// state before this Present, so the fly-through hands over to the menu
+		// without a frame in between.
+		static int sPrevMode = -1;
+		static unsigned sFramesSinceCinema = 999;
+		sFramesSinceCinema = cinema ? 0 : (sFramesSinceCinema < 999 ? sFramesSinceCinema + 1 : 999);
+		const bool menuStable = mode == 1 && sPrevMode == 1;
+		sPrevMode = mode;
+		const bool presentable = sVRSystem && !sCompositorGivenUp && sLastSubmitAccepted &&
+			!sUILayerOverlayFailed && vr::VROverlay() != nullptr;
+		const bool uiLayer = presentable && !cinema && sFramesSinceCinema >= 8 &&
+			((!gameplay && introBefore) || menuStable);
+		InterlockedExchange(&sUILayerScreen, uiLayer ? 1 : 0);
+
+		// Screen-state trace for classifying the remaining cases (always-on log).
+		static int sLastMode = -2;
+		static bool sLastScene = false, sLastPanel = false, sLastGameplay = false;
+		static bool sLastUILayer = false;
+		static int sScreenLogs = 0;
+		const bool panelLive = panelAge <= 3;
+		if ((mode != sLastMode || !noScene != sLastScene || panelLive != sLastPanel ||
+			gameplay != sLastGameplay || uiLayer != sLastUILayer) && sScreenLogs < 300) {
+			sScreenLogs++;
+			CompatibilityLog("screen frame=%u mode=%d prev=%d panel_age=%u gbuf_age=%u "
+				"depthscene_age=%u gameplay=%d menu_seen=%d cinema=%d ui_layer=%d\n",
+				G->frame_no, mode, previous, panelAge, gbufAge, sceneAge,
+				gameplay ? 1 : 0, sMainMenuSeen ? 1 : 0, cinema ? 1 : 0, uiLayer ? 1 : 0);
+			sLastMode = mode;
+			sLastScene = !noScene;
+			sLastPanel = panelLive;
+			sLastGameplay = gameplay;
+			sLastUILayer = uiLayer;
+		}
+
+		const bool wasCinema = InterlockedCompareExchange(&sCinemaFrameActive, 0, 0) != 0;
+		// The menu-mode reader failed (an unexpected executable): the first load
+		// entered after 3D has been seen is past the start-up intro.
+		if (cinema && !wasCinema && mode < 0 && sGBufferEverSeen && !sMainMenuSeen) {
+			sMainMenuSeen = true;
+			CompatibilityLog("screen: menu mode unreadable - start-up intro ended at frame %u\n",
+				G->frame_no);
+		}
+		if (cinema != wasCinema) {
+			static int sTransitionLogs = 0;
+			if (sTransitionLogs++ < 40)
+				CompatibilityLog("cinema=%d frame=%u mode=%d panel_age=%u gbuf_age=%u\n",
+					cinema ? 1 : 0, G->frame_no, mode, panelAge, gbufAge);
+			ArmTrace("cinema transition", 4);
+			InterlockedExchange(&sCinemaFrameActive, cinema ? 1 : 0);
+		}
+		// Deliberately NOT touching the global VR flags (vrHeadRotationValid /
+		// vrStereoParamsValid): clearing them for a whole start-up sequence left
+		// the second eye without its own matrices for the rest of the session.
+		// A cinema frame has no 3D scene by definition, so the camera is moot;
+		// only its flat UI is kept native (BeginUniversalUICB).
+	}
+
+	bool IsCinemaFrame()
+	{
+		return InterlockedCompareExchange(&sCinemaFrameActive, 0, 0) != 0;
+	}
+
+	bool IsNativeMainMenuCached()
+	{
+		return InterlockedCompareExchange(&sNativeMenuModeCached, -1, -1) == 1;
+	}
+
+	bool IsStartupIntro()
+	{
+		return !sMainMenuSeen && !IsGameplayModeActive();
+	}
+
+	bool IsUILayerScreen()
+	{
+		return InterlockedCompareExchange(&sUILayerScreen, 0, 0) != 0;
 	}
 
 	void NotifyJournalButton(unsigned frame)
@@ -2393,6 +2793,10 @@ namespace VRPose {
 		return true;
 	}
 
+	// Bumped whenever an input layout is added to one of the classification
+	// sets below, so per-thread query caches know to look again.
+	static volatile LONG sLayoutSetGeneration = 0;
+
 	void RegisterKnownNonMatrixInputLayout(void *inputLayout)
 	{
 		// D3D11 allows resource/state-object creation (including
@@ -2406,13 +2810,27 @@ namespace VRPose {
 		EnterCriticalSectionPretty(&G->mCriticalSection);
 		sKnownNonMatrixInputLayouts.insert(inputLayout);
 		LeaveCriticalSection(&G->mCriticalSection);
+		InterlockedIncrement(&sLayoutSetGeneration);
 	}
 
 	bool IsKnownNonMatrixInputLayout(void *inputLayout)
 	{
+		// Asked on nearly every draw by the render thread, while the set only
+		// grows at input-layout creation. Answer from a per-thread last-query
+		// cache and take 3Dmigoto's global lock only when the layout or the set
+		// has changed since.
+		thread_local void *tLastLayout = (void *)~(uintptr_t)0;
+		thread_local LONG tLastGeneration = -1;
+		thread_local bool tLastFound = false;
+		const LONG generation = InterlockedCompareExchange(&sLayoutSetGeneration, 0, 0);
+		if (inputLayout == tLastLayout && generation == tLastGeneration)
+			return tLastFound;
 		EnterCriticalSectionPretty(&G->mCriticalSection);
 		bool found = sKnownNonMatrixInputLayouts.count(inputLayout) != 0;
 		LeaveCriticalSection(&G->mCriticalSection);
+		tLastLayout = inputLayout;
+		tLastGeneration = generation;
+		tLastFound = found;
 		return found;
 	}
 
@@ -2439,16 +2857,27 @@ namespace VRPose {
 		EnterCriticalSection(&sScanLock);
 		sSkinnedLayouts.insert(inputLayout);
 		LeaveCriticalSection(&sScanLock);
+		InterlockedIncrement(&sLayoutSetGeneration);
 	}
 
 	bool IsSkinnedInputLayout(void *inputLayout)
 	{
 		if (!inputLayout)
 			return false;
+		// Same per-thread last-query cache as IsKnownNonMatrixInputLayout.
+		thread_local void *tLastLayout = (void *)~(uintptr_t)0;
+		thread_local LONG tLastGeneration = -1;
+		thread_local bool tLastFound = false;
+		const LONG generation = InterlockedCompareExchange(&sLayoutSetGeneration, 0, 0);
+		if (inputLayout == tLastLayout && generation == tLastGeneration)
+			return tLastFound;
 		EnsureScanLock();
 		EnterCriticalSection(&sScanLock);
 		bool found = sSkinnedLayouts.count(inputLayout) != 0;
 		LeaveCriticalSection(&sScanLock);
+		tLastLayout = inputLayout;
+		tLastGeneration = generation;
+		tLastFound = found;
 		return found;
 	}
 
@@ -2478,12 +2907,22 @@ namespace VRPose {
 		const VRMenu::Settings &menu = VRMenu::GetSettings();
 		const float separationScale = max(0.1f, min(3.0f,
 			menu.stereoSeparationMm / 63.5f));
-		for (int eye = 0; eye < 2; ++eye) {
-			const vr::EVREye vrEye = (eye == 0) ? vr::Eye_Left : vr::Eye_Right;
-			const vr::HmdMatrix34_t eyeToHead = sVRSystem->GetEyeToHeadTransform(vrEye);
-			G->vrEyeOffsetView[eye][0] = eyeToHead.m[0][3] * kMetresToGameUnits * separationScale;
-			G->vrEyeOffsetView[eye][1] = eyeToHead.m[1][3] * kMetresToGameUnits * separationScale;
-			G->vrEyeOffsetView[eye][2] = -eyeToHead.m[2][3] * kMetresToGameUnits * separationScale;
+		// This runs for every main camera write, twice per write (both eyes),
+		// up to a few hundred times a frame; the eye-to-head transform only
+		// changes when the headset's IPD does. Refresh once per frame or when
+		// the slider moves - an IPD change reaches the image a frame later.
+		static unsigned sOffsetsFrame = 0xFFFFFFFF;
+		static float sOffsetsScale = -1.0f;
+		if (sOffsetsFrame != G->frame_no || sOffsetsScale != separationScale) {
+			sOffsetsFrame = G->frame_no;
+			sOffsetsScale = separationScale;
+			for (int eye = 0; eye < 2; ++eye) {
+				const vr::EVREye vrEye = (eye == 0) ? vr::Eye_Left : vr::Eye_Right;
+				const vr::HmdMatrix34_t eyeToHead = sVRSystem->GetEyeToHeadTransform(vrEye);
+				G->vrEyeOffsetView[eye][0] = eyeToHead.m[0][3] * kMetresToGameUnits * separationScale;
+				G->vrEyeOffsetView[eye][1] = eyeToHead.m[1][3] * kMetresToGameUnits * separationScale;
+				G->vrEyeOffsetView[eye][2] = -eyeToHead.m[2][3] * kMetresToGameUnits * separationScale;
+			}
 		}
 
 		// The eye frustum TANGENTS are fixed hardware properties, but the
@@ -7697,6 +8136,33 @@ namespace VRPose {
 		}
 		if (playerOut) *playerOut = player;
 		return player != NULL;
+	}
+
+	// Current and previous front-end mode bytes (+0x138 / +0x139 of the state
+	// object behind the game manager; 1 = main-menu level, 0 = gameplay), with
+	// the same executable guard as IsNativeMainMenuActive. -1 when unreadable.
+	static bool ReadNativeMenuMode(int *mode, int *previous)
+	{
+		if (mode) *mode = -1;
+		if (previous) *previous = -1;
+		BYTE *base = (BYTE *)GetModuleHandleA(NULL);
+		if (!base)
+			return false;
+		__try {
+			void *manager = *(void **)(base + 0xD01E50);
+			void **vtable = manager ? *(void ***)manager : NULL;
+			if (!vtable || vtable[0x128 / sizeof(void *)] != base + 0x21ACF0)
+				return false;
+			BYTE *menuState = *(BYTE **)((BYTE *)manager + 0x8);
+			if (!menuState)
+				return false;
+			if (mode) *mode = menuState[0x138];
+			if (previous) *previous = menuState[0x139];
+			return true;
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER) {
+			return false;
+		}
 	}
 
 	bool IsNativeMainMenuActive()
@@ -19967,6 +20433,27 @@ namespace VRPose {
 			"at +0x826B50 (culling only)\n");
 	}
 
+	// Each expanded-visibility bypass can be left out on its own with a marker
+	// file beside d3d11.dll, read once at launch like the menu choice itself.
+	// The occlusion bypass makes Metro submit everything hidden behind walls;
+	// the two frustum bypasses are what fix edge pop-in. Measuring them apart
+	// says which one the framerate is paying for. The profiler's policy line
+	// reports the same files (StereoSinglePass::ReportFoldPolicy).
+	enum VisibilityBypass { kVisOcclusion, kVisObject, kVisCluster };
+	static bool VisibilityBypassLeftOut(VisibilityBypass which)
+	{
+		static int leftOut[3] = { -1, -1, -1 };
+		if (leftOut[0] < 0) {
+			leftOut[kVisObject] = StereoSinglePass::FlagFilePresent(L"vr_vis_object_bypass_off.txt") ? 1 : 0;
+			leftOut[kVisCluster] = StereoSinglePass::FlagFilePresent(L"vr_vis_cluster_bypass_off.txt") ? 1 : 0;
+			leftOut[kVisOcclusion] = StereoSinglePass::FlagFilePresent(L"vr_vis_occlusion_bypass_off.txt") ? 1 : 0;
+			LogInfo("VRPose visibility policy: occlusion bypass %s, object frustum bypass %s, "
+				"cluster frustum bypass %s\n", leftOut[kVisOcclusion] ? "OFF" : "on",
+				leftOut[kVisObject] ? "OFF" : "on", leftOut[kVisCluster] ? "OFF" : "on");
+		}
+		return leftOut[which] != 0;
+	}
+
 	void ForceWideCullingFov()
 	{
 		// These patches are the broad expanded-visibility mode. They modify live
@@ -19976,9 +20463,12 @@ namespace VRPose {
 		// native world-list coverage paths in one coherent launch-time state.
 		if (!VRMenu::ExpandedVisibilityActive())
 			return;
-		InstallCpuScreenOcclusionBypass();
-		InstallObjectFrustumBypass();
-		InstallClusterFrustumBypass();
+		if (!VisibilityBypassLeftOut(kVisOcclusion))
+			InstallCpuScreenOcclusionBypass();
+		if (!VisibilityBypassLeftOut(kVisObject))
+			InstallObjectFrustumBypass();
+		if (!VisibilityBypassLeftOut(kVisCluster))
+			InstallClusterFrustumBypass();
 		return;
 		// Metro 2033 Redux Steam keeps the world camera's vertical FOV here.
 		// The user.cfg cvar is clamped to 90 degrees: even with
@@ -23015,7 +23505,6 @@ namespace VRPose {
 		// milestone-1 behaviour (head tracking, flat output), which is
 		// degraded but perfectly playable.
 		static int sConsecutiveFailures = 0;
-		static bool sCompositorGivenUp = false;
 		if (sCompositorGivenUp)
 			return;
 		if (sConsecutiveFailures > 200) {
@@ -23225,7 +23714,13 @@ namespace VRPose {
 		// abruptly to real stereo at its cutoff. Screen-space handling must be
 		// driven only by a confirmed fullscreen-video draw; the loading and pause
 		// overlays already have their own render paths.
-		const bool monoPresentation = IsFullscreenVideoFrame(G->frame_no);
+		// Cinema frames (main menu, loading screens) take the same route as
+		// movies: one flat image on the room-fixed theatre screen.
+		// The cinema decision was made one Present ago; a frame that filled the
+		// G-buffer after all (the first frame of a level) is a real 3D scene.
+		const bool monoPresentation = IsFullscreenVideoFrame(G->frame_no) ||
+			(IsCinemaFrame() && (StampAge(&sGBufferFrame) > 1 ||
+				InterlockedCompareExchange(&sCinemaPanelHold, 0, 0) != 0));
 		if (!monoPresentation)
 			HideVideoOverlay();
 		if (!VRMenu::IsOpen())
@@ -23420,8 +23915,12 @@ namespace VRPose {
 			sSubmitErrorLogCount++;
 		}
 
-		if (errL == vr::VRCompositorError_None && errR == vr::VRCompositorError_None)
+		sLastSubmitAccepted = errL == vr::VRCompositorError_None &&
+			errR == vr::VRCompositorError_None;
+		if (sLastSubmitAccepted) {
 			sConsecutiveFailures = 0;
+			InterlockedIncrement(&sSuccessfulSubmits);
+		}
 		else
 			sConsecutiveFailures++;
 

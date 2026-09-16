@@ -10,7 +10,7 @@ $visibilitySource = [IO.File]::ReadAllText((Join-Path $root 'ThirdParty\3Dmigoto
 
 foreach ($required in @(
     'static const int kTabCount = 4;',
-    'static const int rows[kTabCount] = { 8, 6, 6, 16 };',
+    'static const int rows[kTabCount] = { 8, 6, 7, 16 };',
     'sSettings.renderMode = RenderMode::TrueStereo;',
     'expanded_visibility=%d',
 	'if (sCurrentTab != 3)',

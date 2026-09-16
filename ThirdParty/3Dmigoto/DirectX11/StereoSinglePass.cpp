@@ -88,28 +88,236 @@ namespace StereoSinglePass {
 	unsigned gDeclinedNoVariant = 0;
 	unsigned gDeclinedReadsEye = 0;
 	unsigned gDeclinedTessellated = 0;
+	unsigned gDeclinedDisabled = 0;
+	unsigned gDeclinedPrivateCB = 0;
+	unsigned gDeclinedInstanced = 0;
+	unsigned gDeclinedShaderList = 0;
+	unsigned gDeclinedNoObjectCB = 0;
+	unsigned gDeclinedEyeIndependent = 0;
+	unsigned gDeclinedDepthTested = 0;
+	unsigned gDeclinedSceneBuffer = 0;
+	unsigned gDeclinedNoBothSliceView = 0;
+	unsigned gFoldableIfInstanced = 0;
+	unsigned gFoldableIfDepth = 0;
+	bool gVPRTSupported = false;
 
-	void ReportFrameStats()
+	// Beside OUR DLL, not relative to the process working directory: the first
+	// attempt probed a bare filename, the game's working directory is not the
+	// game folder, and a whole play session was captured with the switch
+	// silently off. Same resolution HackerContext uses for its dumps.
+	static bool FoldFlagPath(const wchar_t *name, wchar_t *out, size_t outCount)
+	{
+		// A path that does not fit is treated as "no such file". The _s string
+		// functions would fast-fail the whole process instead: no invalid
+		// parameter handler is installed anywhere in 3Dmigoto.
+		const DWORD n = GetModuleFileNameW(migoto_handle, out, (DWORD)outCount);
+		if (!n || n >= outCount)
+			return false;
+		wchar_t *slash = wcsrchr(out, L'\\');
+		if (!slash)
+			return false;
+		const size_t dirLen = (size_t)(slash + 1 - out);
+		const size_t nameLen = wcslen(name);
+		if (dirLen + nameLen >= outCount)
+			return false;
+		memcpy(slash + 1, name, (nameLen + 1) * sizeof(wchar_t));
+		return true;
+	}
+
+	static bool FoldFlagPresent(const wchar_t *name)
+	{
+		wchar_t path[MAX_PATH];
+		if (!FoldFlagPath(name, path, MAX_PATH))
+			return false;
+		return GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES;
+	}
+
+	bool FoldSceneBufferEnabled()
+	{
+		static int state = -1;
+		if (state < 0)
+			state = FoldFlagPresent(L"vr_fold_scene.txt") ? 1 : 0;
+		return state != 0;
+	}
+
+	bool FoldDepthTestedEnabled()
+	{
+		static int state = -1;
+		if (state < 0)
+			state = FoldFlagPresent(L"vr_fold_depth.txt") ? 1 : 0;
+		// Scene-buffer geometry is depth-tested by definition, so that switch
+		// implies this one - one file is enough to open the whole scene path.
+		return state != 0 || FoldSceneBufferEnabled();
+	}
+
+	bool FlagFilePresent(const wchar_t *name)
+	{
+		return FoldFlagPresent(name);
+	}
+
+	bool FoldInstancedEnabled()
+	{
+		static int state = -1;
+		if (state < 0)
+			state = FoldFlagPresent(L"vr_fold_instanced.txt") ? 1 : 0;
+		return state != 0;
+	}
+
+	namespace {
+		struct InstanceLayout {
+			ID3D11InputLayout *doubled;   // owned; NULL when no per-instance data
+			bool perInstance;
+		};
+		SRWLOCK sLayoutLock = SRWLOCK_INIT;
+		std::unordered_map<ID3D11InputLayout *, InstanceLayout> sInstanceLayouts;
+	}
+
+	void OnCreateInputLayout(ID3D11Device *device, const D3D11_INPUT_ELEMENT_DESC *elements,
+		UINT count, const void *signature, SIZE_T signatureLength, ID3D11InputLayout *created)
+	{
+		if (!device || !elements || !created || !FoldInstancedEnabled())
+			return;
+		InstanceLayout entry = { NULL, false };
+		std::vector<D3D11_INPUT_ELEMENT_DESC> doubled(elements, elements + count);
+		for (D3D11_INPUT_ELEMENT_DESC &e : doubled) {
+			if (e.InputSlotClass != D3D11_INPUT_PER_INSTANCE_DATA)
+				continue;
+			entry.perInstance = true;
+			// Step 0 means "never advance"; those elements need no change.
+			if (e.InstanceDataStepRate)
+				e.InstanceDataStepRate *= 2;
+		}
+		// A layout that needed doubling but could not get it stays out of the
+		// table: an unknown layout is never folded.
+		if (entry.perInstance && FAILED(device->CreateInputLayout(doubled.data(), count,
+				signature, signatureLength, &entry.doubled)))
+			return;
+		AcquireSRWLockExclusive(&sLayoutLock);
+		auto it = sInstanceLayouts.find(created);
+		ID3D11InputLayout *stale = it != sInstanceLayouts.end() ? it->second.doubled : NULL;
+		sInstanceLayouts[created] = entry;
+		ReleaseSRWLockExclusive(&sLayoutLock);
+		if (stale)
+			stale->Release();
+	}
+
+	bool InstanceFoldLayout(ID3D11InputLayout *layout, ID3D11InputLayout **bind)
+	{
+		*bind = NULL;
+		if (!layout)
+			return false;
+		AcquireSRWLockShared(&sLayoutLock);
+		auto it = sInstanceLayouts.find(layout);
+		const bool known = it != sInstanceLayouts.end();
+		if (known)
+			*bind = it->second.doubled;
+		ReleaseSRWLockShared(&sLayoutLock);
+		return known;
+	}
+
+	bool UnmapLegacyEnabled()
+	{
+		static int state = -1;
+		if (state < 0)
+			state = FoldFlagPresent(L"vr_unmap_legacy.txt") ? 1 : 0;
+		return state != 0;
+	}
+
+	// Vertex-shader hashes the player has taken off the folded path.
+	bool ShaderFoldExcluded(UINT64 vsHash)
+	{
+		static std::unordered_set<UINT64> excluded;
+		static bool loaded = false;
+		if (!loaded) {
+			loaded = true;
+			wchar_t path[MAX_PATH];
+			FILE *f = NULL;
+			if (FoldFlagPath(L"vr_fold_exclude.txt", path, MAX_PATH) &&
+				_wfopen_s(&f, path, L"r") == 0 && f) {
+				char line[128];
+				while (fgets(line, sizeof(line), f)) {
+					unsigned long long hash = 0;
+					if (sscanf_s(line, "%llx", &hash) == 1 && hash)
+						excluded.insert((UINT64)hash);
+				}
+				fclose(f);
+			}
+		}
+		return !excluded.empty() && excluded.count(vsHash) != 0;
+	}
+
+	const char *ReportFoldPolicy()
+	{
+		static bool reported = false;
+		if (reported)
+			return NULL;
+		reported = true;
+		// The resolved directory goes in the line as well: the switch was once
+		// probed against the wrong directory and a whole session was wasted.
+		wchar_t path[MAX_PATH] = L"";
+		char dir[MAX_PATH] = "";
+		if (FoldFlagPath(L"", path, MAX_PATH))
+			WideCharToMultiByte(CP_ACP, 0, path, -1, dir, MAX_PATH, NULL, NULL);
+		static char line[1024];
+		sprintf_s(line, "fold policy: scene buffers %s, depth-tested %s, vprt=%d, "
+			"unmap cuts %s, instanced %s | expanded-visibility bypasses left out: occlusion %s, "
+			"object %s, cluster %s (apply only when the menu option is on) | switches looked for in %s "
+			"(vr_fold_scene.txt / vr_fold_depth.txt / vr_fold_exclude.txt / vr_unmap_legacy.txt / "
+			"vr_fold_instanced.txt / vr_vis_*_bypass_off.txt)",
+			FoldSceneBufferEnabled() ? "ON" : "off",
+			FoldDepthTestedEnabled() ? "ON" : "off", gVPRTSupported ? 1 : 0,
+			UnmapLegacyEnabled() ? "OFF (legacy)" : "ON",
+			FoldInstancedEnabled() ? "ON" : "off",
+			FoldFlagPresent(L"vr_vis_occlusion_bypass_off.txt") ? "yes" : "no",
+			FoldFlagPresent(L"vr_vis_object_bypass_off.txt") ? "yes" : "no",
+			FoldFlagPresent(L"vr_vis_cluster_bypass_off.txt") ? "yes" : "no",
+			dir[0] ? dir : "(unknown)");
+		return line;
+	}
+
+	const char *ReportFrameStats()
 	{
 		static unsigned lastLogged = 0;
-		static unsigned accDraws = 0, accNoVariant = 0, accReadsEye = 0;
-		static unsigned accTess = 0, accFrames = 0;
-		accDraws += gDraws;
-		accNoVariant += gDeclinedNoVariant;
-		accReadsEye += gDeclinedReadsEye;
-		accTess += gDeclinedTessellated;
+		static unsigned accFrames = 0;
+		static unsigned acc[15] = { 0 };
+		// NOT gDraws: VRPerf reads that one as a delta of a running total for
+		// the CSV's folded_draws column, so zeroing it here made that column
+		// (and the WORKLOAD line built from it) read 0 on every frame while
+		// these notes showed the true 187-368. Take a delta here instead.
+		unsigned *counters[14] = {
+			&gDeclinedNoVariant, &gDeclinedReadsEye, &gDeclinedTessellated,
+			&gDeclinedDisabled, &gDeclinedPrivateCB, &gDeclinedInstanced,
+			&gDeclinedShaderList, &gDeclinedNoObjectCB, &gDeclinedEyeIndependent,
+			&gDeclinedDepthTested, &gDeclinedSceneBuffer, &gDeclinedNoBothSliceView,
+			&gFoldableIfInstanced, &gFoldableIfDepth
+		};
+		for (int i = 0; i < 14; i++) {
+			acc[i + 1] += *counters[i];
+			*counters[i] = 0;
+		}
+		static unsigned prevFolded = 0;
+		acc[0] += gDraws - prevFolded;
+		prevFolded = gDraws;
 		accFrames++;
-		gDraws = gDeclinedNoVariant = gDeclinedReadsEye = gDeclinedTessellated = 0;
 
 		if (G->frame_no - lastLogged < 600 || !accFrames)
-			return;
+			return NULL;
 		lastLogged = G->frame_no;
-		LogInfo("SinglePass: %.0f draws/frame folded into one pass; %.0f still doubled "
-			"for want of a patched shader, %.0f because they read the other eye, "
-			"%.0f because they tessellate\n",
-			(double)accDraws / accFrames, (double)accNoVariant / accFrames,
-			(double)accReadsEye / accFrames, (double)accTess / accFrames);
-		accDraws = accNoVariant = accReadsEye = accTess = accFrames = 0;
+		const double f = (double)accFrames;
+		static char line[520];
+		sprintf_s(line, "single-pass per frame: folded %.0f | WOULD fold if the gate opened: "
+			"instanced %.0f, depth-tested %.0f | vprt=%d | not folded (first match): "
+			"depth-tested %.0f, scene buffer %.0f, eye-independent %.0f, no object CB %.0f, "
+			"tessellated %.0f, instanced %.0f, shader list %.0f, no patched shader %.0f, "
+			"reads other eye %.0f, private CB %.0f, no both-slice view %.0f, disabled %.0f",
+			acc[0] / f, acc[13] / f, acc[14] / f, gVPRTSupported ? 1 : 0,
+			acc[10] / f, acc[11] / f, acc[9] / f, acc[8] / f, acc[3] / f,
+			acc[6] / f, acc[7] / f, acc[1] / f, acc[2] / f, acc[5] / f, acc[12] / f,
+			acc[4] / f);
+		for (int i = 0; i < 15; i++)
+			acc[i] = 0;
+		accFrames = 0;
+		return line;
 	}
 
 	namespace {
@@ -121,9 +329,16 @@ namespace StereoSinglePass {
 		std::unordered_map<ID3D11VertexShader *, ID3D11VertexShader *> sVariants;
 		std::unordered_map<ID3D11PixelShader *, unsigned> sPSSlots;
 		std::unordered_set<ID3D11PixelShader *> sDeferredLightPS;
+		// Bumped on every insert into sDeferredLightPS (see IsDeferredLightShader).
+		volatile LONG sDeferredLightGeneration = 0;
 		std::unordered_map<ID3D11PixelShader *, ShadowDiagnosticVariants> sShadowDiagnosticVariants;
 		CRITICAL_SECTION sLock;
 		bool sLockReady = false;
+		// Bumped under sLock on every change to sVariants or sPSSlots, so the
+		// per-thread memos in VariantOf/SampledSlotsOf never serve a stale answer.
+		// Bumped BEFORE the change is visible: a reader that races sees a new
+		// generation and re-queries.
+		volatile LONG sShaderTableGeneration = 0;
 
 		bool sReprojectionDirty = false;
 		unsigned sPatched = 0;
@@ -264,14 +479,192 @@ namespace StereoSinglePass {
 		}
 	}
 
-	void OnCreateVertexShader(ID3D11Device *device, const void *bytecode,
-		SIZE_T length, ID3D11VertexShader *created)
-	{
-		if (!device || !bytecode || !length || !created)
-			return;
+	// Shader-creation cost, per frame, for the profiler. Written from whichever
+	// thread creates shaders, so everything here is atomic.
+	volatile LONG64 gCreateVSTicks = 0, gCreatePSTicks = 0, gBuildTicks = 0;
+	volatile LONG gCreateVSCount = 0, gCreatePSCount = 0, gBuildCount = 0, gCacheHits = 0;
+	volatile LONG64 gCreateMaxTicks = 0;
 
+	void NoteShaderCreate(bool pixel, LONGLONG ticks)
+	{
+		InterlockedAdd64(pixel ? &gCreatePSTicks : &gCreateVSTicks, ticks);
+		InterlockedIncrement(pixel ? &gCreatePSCount : &gCreateVSCount);
+		LONG64 seen = gCreateMaxTicks;
+		while (ticks > seen &&
+			InterlockedCompareExchange64(&gCreateMaxTicks, ticks, seen) != seen)
+			seen = gCreateMaxTicks;
+	}
+
+	static bool ShaderSyncEnabled();
+
+	const char *ReportShaderCreation()
+	{
+		const LONG vs = InterlockedExchange(&gCreateVSCount, 0);
+		const LONG ps = InterlockedExchange(&gCreatePSCount, 0);
+		const LONG built = InterlockedExchange(&gBuildCount, 0);
+		const LONG hits = InterlockedExchange(&gCacheHits, 0);
+		const LONG64 vsTicks = InterlockedExchange64(&gCreateVSTicks, 0);
+		const LONG64 psTicks = InterlockedExchange64(&gCreatePSTicks, 0);
+		const LONG64 buildTicks = InterlockedExchange64(&gBuildTicks, 0);
+		const LONG64 maxTicks = InterlockedExchange64(&gCreateMaxTicks, 0);
+		if (!vs && !ps && !built)
+			return NULL;
+		// Loading screens create hundreds; the budget keeps the summary readable
+		// while every gameplay-time creation still gets its line.
+		static unsigned lines = 0;
+		if (++lines > 3000)
+			return NULL;
+		LARGE_INTEGER freq;
+		QueryPerformanceFrequency(&freq);
+		const double toMs = 1000.0 / (double)freq.QuadPart;
+		static char line[300];
+		sprintf_s(line, "shader creation: vs %ld (%.2f ms on game thread), ps %ld (%.2f ms), "
+			"slowest %.2f ms | stereo variants built %ld (%.2f ms, %s), from disk cache %ld",
+			vs, (double)vsTicks * toMs, ps, (double)psTicks * toMs, (double)maxTicks * toMs,
+			built, (double)buildTicks * toMs,
+			ShaderSyncEnabled() ? "sync" : "background", hits);
+		return line;
+	}
+
+	// Stereo variants on disk, keyed by the original bytecode plus the patch
+	// itself, so a changed kEyeCode or PatchHLSL invalidates every entry.
+	// An empty file records "this shader cannot be patched".
+	static const unsigned kVariantCacheVersion = 1;
+
+	static UINT64 Fnv1a64(const unsigned char *p, size_t n, UINT64 h = 1469598103934665603ull)
+	{
+		for (size_t i = 0; i < n; i++) {
+			h ^= p[i];
+			h *= 1099511628211ull;
+		}
+		return h;
+	}
+
+	// Everything else that shapes a variant: PatchHLSL, the decompiler and the
+	// D3DCompile call are all code in this DLL, so its link timestamp stands in
+	// for them (no version to remember to bump); the IniParams register is
+	// configuration the decompiler writes into the HLSL.
+	static UINT64 VariantCacheSalt()
+	{
+		static UINT64 build = 0;
+		static bool haveBuild = false;
+		if (!haveBuild) {
+			DWORD stamp = 0;
+			const IMAGE_DOS_HEADER *dos = (const IMAGE_DOS_HEADER *)migoto_handle;
+			if (dos && dos->e_magic == IMAGE_DOS_SIGNATURE) {
+				const IMAGE_NT_HEADERS *nt = (const IMAGE_NT_HEADERS *)((const BYTE *)dos + dos->e_lfanew);
+				if (nt->Signature == IMAGE_NT_SIGNATURE)
+					stamp = nt->FileHeader.TimeDateStamp;
+			}
+			build = Fnv1a64((const unsigned char *)&stamp, sizeof(stamp));
+			haveBuild = true;   // benign race: every thread computes the same value
+		}
+		const int reg = G->decompiler_settings.IniParamsReg;
+		return Fnv1a64((const unsigned char *)&reg, sizeof(reg), build);
+	}
+
+	static bool VariantCachePath(const unsigned char *bytecode, size_t length,
+		wchar_t *out, size_t outCount)
+	{
+		UINT64 key = Fnv1a64(bytecode, length, VariantCacheSalt());
+		key = Fnv1a64((const unsigned char *)kEyeCode, strlen(kEyeCode), key);
+		key ^= kVariantCacheVersion * 0x9E3779B97F4A7C15ull;
+		wchar_t dir[MAX_PATH];
+		if (!FoldFlagPath(L"vr_singlepass_cache", dir, MAX_PATH))
+			return false;
+		if (_snwprintf_s(out, outCount, _TRUNCATE, L"%s\\%016llX_%zu.bin", dir, key, length) <= 0)
+			return false;
+		CreateDirectoryW(dir, NULL);
+		return true;
+	}
+
+	static void WriteVariantCache(const wchar_t *path, const void *data, size_t bytes)
+	{
+		// Written to a temporary name and renamed, so a crash mid-write can never
+		// leave a truncated shader that loads as garbage next session.
+		wchar_t tmp[MAX_PATH + 8];
+		if (_snwprintf_s(tmp, _TRUNCATE, L"%s.tmp", path) <= 0)
+			return;
+		FILE *f = NULL;
+		if (_wfopen_s(&f, tmp, L"wb") != 0 || !f)
+			return;
+		const bool ok = bytes == 0 || fwrite(data, 1, bytes, f) == bytes;
+		fclose(f);
+		if (!ok || !MoveFileExW(tmp, path, MOVEFILE_REPLACE_EXISTING))
+			DeleteFileW(tmp);
+	}
+
+	static unsigned sVariantGeneration = 0;   // under sLock; bumped by ReleaseAll
+
+	static void InsertVariant(ID3D11VertexShader *created, ID3D11VertexShader *variant,
+		unsigned generation)
+	{
+		EnsureLock();
+		EnterCriticalSection(&sLock);
+		if (generation == sVariantGeneration) {
+			InterlockedIncrement(&sShaderTableGeneration);
+			ID3D11VertexShader *&slot = sVariants[created];
+			std::swap(slot, variant);   // variant now holds any stale entry
+			sPatched++;
+		}
+		LeaveCriticalSection(&sLock);
+		if (variant)
+			variant->Release();
+	}
+
+	static void BuildVariant(ID3D11Device *device, const void *bytecode,
+		SIZE_T length, ID3D11VertexShader *created, unsigned generation)
+	{
 		LARGE_INTEGER t0, t1;
 		QueryPerformanceCounter(&t0);
+		struct BuildTimer {
+			LARGE_INTEGER start;
+			~BuildTimer() {
+				LARGE_INTEGER end;
+				QueryPerformanceCounter(&end);
+				InterlockedAdd64(&gBuildTicks, end.QuadPart - start.QuadPart);
+				InterlockedIncrement(&gBuildCount);
+			}
+		} buildTimer{ t0 };
+
+		wchar_t cachePath[MAX_PATH];
+		const bool cacheable = VariantCachePath((const unsigned char *)bytecode, length,
+			cachePath, MAX_PATH);
+		if (cacheable) {
+			FILE *f = NULL;
+			if (_wfopen_s(&f, cachePath, L"rb") == 0 && f) {
+				std::vector<unsigned char> blob;
+				fseek(f, 0, SEEK_END);
+				const long size = ftell(f);
+				fseek(f, 0, SEEK_SET);
+				if (size > 0) {
+					blob.resize((size_t)size);
+					if (fread(blob.data(), 1, blob.size(), f) != blob.size())
+						blob.clear();
+				}
+				fclose(f);
+				if (size == 0) {
+					InterlockedIncrement(&gCacheHits);
+					return;   // known unpatchable
+				}
+				ID3D11VertexShader *variant = NULL;
+				if (!blob.empty() && SUCCEEDED(device->CreateVertexShader(blob.data(),
+						blob.size(), NULL, &variant)) && variant) {
+					InterlockedIncrement(&gCacheHits);
+					InsertVariant(created, variant, generation);
+					return;
+				}
+				// Unreadable entry: fall through and rebuild it.
+			}
+		}
+
+		// Every outcome below is deterministic for the same bytecode, so a
+		// failure is remembered too and never re-attempted next session.
+		struct NegativeCache {
+			const wchar_t *path;
+			bool armed;
+			~NegativeCache() { if (armed && path) WriteVariantCache(path, NULL, 0); }
+		} negative{ cacheable ? cachePath : NULL, true };
 
 		std::string asmText = BinaryToAsmText(bytecode, length, false);
 		if (asmText.empty()) {
@@ -322,30 +715,153 @@ namespace StereoSinglePass {
 
 		ID3D11VertexShader *variant = NULL;
 		hr = device->CreateVertexShader(code->GetBufferPointer(), code->GetBufferSize(), NULL, &variant);
-		code->Release();
 		if (FAILED(hr) || !variant) {
+			// A device failure says nothing about the bytecode; do not cache it.
+			negative.armed = false;
+			code->Release();
 			sFailedCompile++;
 			return;
 		}
+		negative.armed = false;
+		if (cacheable)
+			WriteVariantCache(cachePath, code->GetBufferPointer(), code->GetBufferSize());
+		code->Release();
 
-		EnsureLock();
-		EnterCriticalSection(&sLock);
-		sVariants[created] = variant;
-		sPatched++;
-		LeaveCriticalSection(&sLock);
+		InsertVariant(created, variant, generation);
 
 		QueryPerformanceCounter(&t1);
 		sPatchTicks += t1.QuadPart - t0.QuadPart;
+	}
+
+	// Building a variant is a decompile plus a full HLSL compile - tens of
+	// milliseconds. Metro creates shaders during play (new materials, NPCs,
+	// weapons), and doing that work inside its CreateVertexShader call held
+	// its thread long enough to miss a frame, which the compositor answers by
+	// locking to half rate for a second or more. So it runs on a worker; until
+	// the variant exists the draw simply takes the double-draw path.
+	// vr_shader_sync.txt beside the DLL restores the old inline build.
+	static bool ShaderSyncEnabled()
+	{
+		static int state = -1;
+		if (state < 0)
+			state = FoldFlagPresent(L"vr_shader_sync.txt") ? 1 : 0;
+		return state != 0;
+	}
+
+	namespace {
+		struct VariantJob {
+			ID3D11Device *device;
+			ID3D11VertexShader *created;
+			std::vector<unsigned char> bytecode;
+			unsigned generation;
+		};
+		// Statically initialised, so no thread can ever reach an uninitialised
+		// lock however the first shader creations interleave.
+		SRWLOCK sJobLock = SRWLOCK_INIT;
+		CONDITION_VARIABLE sJobReady = CONDITION_VARIABLE_INIT;
+		std::vector<VariantJob> sJobs;
+		// 0 not started, 3 starting, 1 worker running, 2 no worker (build inline).
+		volatile LONG sWorkerStarted = 0;
+
+		DWORD WINAPI VariantWorker(LPVOID)
+		{
+			for (;;) {
+				AcquireSRWLockExclusive(&sJobLock);
+				while (sJobs.empty())
+					SleepConditionVariableSRW(&sJobReady, &sJobLock, INFINITE, 0);
+				VariantJob job = std::move(sJobs.front());
+				sJobs.erase(sJobs.begin());
+				ReleaseSRWLockExclusive(&sJobLock);
+
+				BuildVariant(job.device, job.bytecode.data(), job.bytecode.size(),
+					job.created, job.generation);
+				job.created->Release();
+				job.device->Release();
+			}
+		}
+	}
+
+	void OnCreateVertexShader(ID3D11Device *device, const void *bytecode,
+		SIZE_T length, ID3D11VertexShader *created)
+	{
+		if (!device || !bytecode || !length || !created)
+			return;
+
+		// A new shader can be handed the address of one the game has released.
+		// Drop that one's variant now, or it would be used for this shader until
+		// the worker replaces it.
+		EnsureLock();
+		EnterCriticalSection(&sLock);
+		const unsigned generation = sVariantGeneration;
+		ID3D11VertexShader *stale = NULL;
+		auto existing = sVariants.find(created);
+		if (existing != sVariants.end()) {
+			stale = existing->second;
+			InterlockedIncrement(&sShaderTableGeneration);
+			sVariants.erase(existing);
+		}
+		LeaveCriticalSection(&sLock);
+		if (stale)
+			stale->Release();
+
+		if (ShaderSyncEnabled()) {
+			BuildVariant(device, bytecode, length, created, generation);
+			return;
+		}
+
+		if (InterlockedCompareExchange(&sWorkerStarted, 3, 0) == 0) {
+			HANDLE thread = CreateThread(NULL, 0, VariantWorker, NULL, 0, NULL);
+			if (thread) {
+				// Below the game's threads: it must never compete with a frame.
+				SetThreadPriority(thread, THREAD_PRIORITY_BELOW_NORMAL);
+				CloseHandle(thread);
+				InterlockedExchange(&sWorkerStarted, 1);
+			} else {
+				InterlockedExchange(&sWorkerStarted, 2);   // no worker: stay inline
+			}
+		}
+		// Another thread is creating the worker: wait for the outcome, so no
+		// job is queued for a worker that then fails to start.
+		while (sWorkerStarted == 3)
+			Sleep(0);
+		if (sWorkerStarted != 1) {
+			BuildVariant(device, bytecode, length, created, generation);
+			return;
+		}
+
+		// Both are kept alive until the worker is done: the key must not be
+		// freed and its address reused while its variant is still being built.
+		VariantJob job;
+		job.device = device;
+		job.created = created;
+		job.bytecode.assign((const unsigned char *)bytecode,
+			(const unsigned char *)bytecode + length);
+		job.generation = generation;
+		device->AddRef();
+		created->AddRef();
+		AcquireSRWLockExclusive(&sJobLock);
+		sJobs.push_back(std::move(job));
+		ReleaseSRWLockExclusive(&sJobLock);
+		WakeConditionVariable(&sJobReady);
 	}
 
 	ID3D11VertexShader *VariantOf(ID3D11VertexShader *original)
 	{
 		if (!original || sVariants.empty())
 			return NULL;
+		thread_local ID3D11VertexShader *tLastShader = NULL;
+		thread_local LONG tLastGeneration = -1;
+		thread_local ID3D11VertexShader *tLastVariant = NULL;
+		const LONG generation = sShaderTableGeneration;
+		if (original == tLastShader && generation == tLastGeneration)
+			return tLastVariant;
 		EnterCriticalSection(&sLock);
 		auto it = sVariants.find(original);
 		ID3D11VertexShader *v = (it != sVariants.end()) ? it->second : NULL;
 		LeaveCriticalSection(&sLock);
+		tLastShader = original;
+		tLastGeneration = generation;
+		tLastVariant = v;
 		return v;
 	}
 
@@ -412,9 +928,13 @@ namespace StereoSinglePass {
 
 		EnsureLock();
 		EnterCriticalSection(&sLock);
+		InterlockedIncrement(&sShaderTableGeneration);
 		sPSSlots[created] = mask;
 		if (deferredLight)
+		{
 			sDeferredLightPS.insert(created);
+			InterlockedIncrement(&sDeferredLightGeneration);
+		}
 		LeaveCriticalSection(&sLock);
 
 		// This exact instruction sequence identifies Metro's shadowed deferred
@@ -466,10 +986,21 @@ namespace StereoSinglePass {
 			return 0;
 		if (!sLockReady)
 			return 0xFFFFFFFFu;   // unknown: assume it reads everything
+		// Asked on every draw; answer repeats until the shader or the table
+		// changes, so skip the lock and lookup when neither has.
+		thread_local ID3D11PixelShader *tLastShader = NULL;
+		thread_local LONG tLastGeneration = -1;
+		thread_local unsigned tLastMask = 0;
+		const LONG generation = sShaderTableGeneration;
+		if (ps == tLastShader && generation == tLastGeneration)
+			return tLastMask;
 		EnterCriticalSection(&sLock);
 		auto it = sPSSlots.find(ps);
 		const unsigned mask = (it != sPSSlots.end()) ? it->second : 0xFFFFFFFFu;
 		LeaveCriticalSection(&sLock);
+		tLastShader = ps;
+		tLastGeneration = generation;
+		tLastMask = mask;
 		return mask;
 	}
 
@@ -477,9 +1008,21 @@ namespace StereoSinglePass {
 	{
 		if (!ps || !sLockReady)
 			return false;
+		// Asked on every draw, while the set only grows when a shader is
+		// created: answer from a per-thread last-query cache and take the lock
+		// only when the shader or the set has changed.
+		thread_local ID3D11PixelShader *tLastShader = NULL;
+		thread_local LONG tLastGeneration = -1;
+		thread_local bool tLastFound = false;
+		const LONG generation = InterlockedCompareExchange(&sDeferredLightGeneration, 0, 0);
+		if (ps == tLastShader && generation == tLastGeneration)
+			return tLastFound;
 		EnterCriticalSection(&sLock);
 		const bool found = sDeferredLightPS.count(ps) != 0;
 		LeaveCriticalSection(&sLock);
+		tLastShader = ps;
+		tLastGeneration = generation;
+		tLastFound = found;
 		return found;
 	}
 
@@ -494,13 +1037,22 @@ namespace StereoSinglePass {
 		// mapping. HackerDevice reserves the room up front instead.
 		if ((int)G->iniParams.size() < kReprojectionParam + 4)
 			return;
+		// Called for every camera write (up to ~100 a frame) with mostly the
+		// same matrix, and each dirty mark cost a Map(DISCARD) of the ini
+		// texture at the next fold. Compared against the live rows rather than
+		// a private copy, so anything else that rewrites or zeroes iniParams
+		// still leads to an upload.
+		bool changed = false;
 		for (int row = 0; row < 4; row++) {
-			G->iniParams[kReprojectionParam + row].x = m[row * 4 + 0];
-			G->iniParams[kReprojectionParam + row].y = m[row * 4 + 1];
-			G->iniParams[kReprojectionParam + row].z = m[row * 4 + 2];
-			G->iniParams[kReprojectionParam + row].w = m[row * 4 + 3];
+			DirectX::XMFLOAT4 &p = G->iniParams[kReprojectionParam + row];
+			const float *r = m + row * 4;
+			if (p.x != r[0] || p.y != r[1] || p.z != r[2] || p.w != r[3]) {
+				p.x = r[0]; p.y = r[1]; p.z = r[2]; p.w = r[3];
+				changed = true;
+			}
 		}
-		sReprojectionDirty = true;
+		if (changed)
+			sReprojectionDirty = true;
 	}
 
 	void UploadIfDirty(ID3D11DeviceContext1 *context, ID3D11Resource *iniTexture)
@@ -698,9 +1250,13 @@ namespace StereoSinglePass {
 		if (!sLockReady)
 			return;
 		EnterCriticalSection(&sLock);
+		InterlockedIncrement(&sShaderTableGeneration);
 		for (auto &kv : sVariants)
 			if (kv.second) kv.second->Release();
 		sVariants.clear();
+		// Only called when the device is replaced (StereoTwin::NoteDevice): a
+		// build still in flight belongs to the old device.
+		sVariantGeneration++;
 		LeaveCriticalSection(&sLock);
 	}
 }

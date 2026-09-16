@@ -206,6 +206,44 @@ namespace StereoTwin {
 	extern unsigned gDoubledDraws;
 	extern unsigned gSharedDraws;
 	extern unsigned gEyeCBSwaps;
+	// Where the constant-buffer calls of a doubled draw actually go. Measured:
+	// 3.85 calls and 3.2 us per doubled draw, against 732 calls and 0.2 ms for
+	// everything the game itself does - so this bucket IS the doubling, and
+	// this census says which of our own sites to cut first.
+	extern unsigned gEyeCBRewrites[2];    // Map+Unmap of the game's buffer, per slot
+	extern unsigned gEyeCBRestores[2];    // putting the left eye's bytes back
+	extern unsigned gEyeCBPSBinds;        // eye1CB bound to the pixel stage
+	extern unsigned gPaletteTwinBinds;    // right-eye bone palettes bound
+	extern unsigned gPaletteTwinRestores;
+	// One line for the profiler summary every 600 frames, NULL in between.
+	const char *ReportEyeCBCensus();
+
+	// How much of a hooked Map/Unmap is the DRIVER and how much is our hook
+	// body. Cutting the body three times moved the measured cost from 0.87 to
+	// 0.86 us/call, so this settles whether anything is left to cut here.
+	extern unsigned long long gMapDriverTicks, gMapBodyTicks, gMapDriverCalls;
+	extern unsigned long long gUnmapDriverTicks, gUnmapBodyTicks, gUnmapDriverCalls;
+	const char *ReportMapSplit();
+	// Bumped whenever a twin RTV/DSV/SRV is registered or the registry is
+	// emptied, so per-draw callers can memoise TwinSRV/TwinRTV answers.
+	extern volatile LONG gViewGeneration;
+	// Where the Unmap body's time goes, one bucket per block that did work.
+	enum UnmapSection {
+		kUnmapSecShadow, kUnmapSecClip, kUnmapSecObject, kUnmapSecCamera,
+		kUnmapSecPaletteCopy, kUnmapSecPalettePatch, kUnmapSecDivert, kUnmapSecCount
+	};
+	extern unsigned long long gUnmapSecTicks[kUnmapSecCount];
+	extern unsigned long long gUnmapSecHits[kUnmapSecCount];
+	const char *ReportUnmapSections();
+	// Same for DrawIndexed, timed with __rdtsc (a QPC call per boundary would
+	// itself cost a visible fraction of a draw).
+	enum DrawSection {
+		kDrawSecProbes, kDrawSecBefore, kDrawSecRestore, kDrawSecFold,
+		kDrawSecGame, kDrawSecTwin, kDrawSecAfter, kDrawSecCount
+	};
+	extern unsigned long long gDrawSecTicks[kDrawSecCount];
+	extern unsigned long long gDrawSecHits[kDrawSecCount];
+	const char *ReportDrawSections();
 	void ReportFrameStats();
 
 	void ReleaseAll();

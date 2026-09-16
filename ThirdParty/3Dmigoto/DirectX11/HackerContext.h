@@ -23,7 +23,9 @@ void ReportEyeCBCost();
 
 // Drop everything we hold that belongs to a D3D device, after the game
 // replaces it - which it does whenever a video setting changes.
-void ResetVRDeviceState();
+// deviceReplaced=false: a new swap chain on the SAME device - only render-
+// target state is dropped; buffers the game will never rebind are kept.
+void ResetVRDeviceState(bool deviceReplaced = true);
 
 class HackerContext;
 
@@ -377,6 +379,47 @@ private:
 	bool mVRMenuInitDone;
 	bool mVRMenuInitOk;
 	unsigned mVRMenuLastFrame;
+	// Profiler HUD (VRPerf text on its own compositor overlay).
+	void DrawPerfHud();
+	ID3D11Texture2D *mPerfHudTexture;
+	ID3D11RenderTargetView *mPerfHudRTV;
+	DirectX::SpriteBatch *mPerfHudSpriteBatch;
+	DirectX::SpriteFont *mPerfHudFont;
+	bool mPerfHudInitDone;
+	bool mPerfHudInitOk;
+	unsigned mPerfHudLastFrame;
+	unsigned long long mPerfHudTextHash;
+	// Late-2D UI layer for non-gameplay screens: Metro's post-scene 2D is
+	// redirected into one untwinned transparent target and shown as a quad.
+	bool EnsureUILayerResources(UINT width, UINT height, DXGI_FORMAT format);
+	void ActivateUILayer();
+	void BeginUILayerDraw(bool worldLabel);
+	void EndUILayerDraw(const DrawCallInfo &call);
+	ID3D11Texture2D *mUILayerTexture;
+	ID3D11RenderTargetView *mUILayerRTV;
+	ID3D11Texture2D *mUILayerPresentTexture;
+	UINT mUILayerWidth;
+	UINT mUILayerHeight;
+	DXGI_FORMAT mUILayerFormat;
+	bool mUILayerUsedThisFrame;
+	bool mUILayerBlendSwapped;
+	bool mUILayerExceptionBound;
+	// Opaque-draw coverage pass: a stencil tag per opaque draw, then the same
+	// draw again writing alpha 1 where the tag landed.
+	ID3D11Texture2D *mUILayerStencilTexture;
+	ID3D11DepthStencilView *mUILayerDSV;
+	UINT mUILayerStencilRef;
+	bool mUILayerCoverageTagged;
+	ID3D11DepthStencilState *mUILayerSavedDSS;
+	UINT mUILayerSavedStencilRef;
+	// Is this the immediate context? Asked on every shadowed Map; the answer
+	// cannot change for a given context. -1 until first asked.
+	int mContextTypeImmediate;
+	// The blend state actually bound around a layer draw (held reference).
+	ID3D11BlendState *mUILayerSavedBlend;
+	FLOAT mUILayerSavedBlendFactor[4];
+	UINT mUILayerSavedSampleMask;
+	void ReleaseUILayerResources();
 
 	bool BeforeDispatch(DispatchContext *context);
 	void AfterDispatch(DispatchContext *context);
@@ -445,9 +488,10 @@ private:
 
 protected:
 	// Allow FrameAnalysisContext access to these as an interim measure
-	// until it has been further decoupled from HackerContext. Be wary of
-	// relying on these - they will be zero in release mode with no
-	// ShaderOverrides / ShaderRegex:
+	// until it has been further decoupled from HackerContext.
+	// Metro2033ReduxVR: these now always hold the bound shader's hash (0 for
+	// a shader with no known hash), because this mod's draw classifiers read
+	// them on every draw. Upstream left them zero without ShaderOverrides.
 	UINT64 mCurrentVertexShader;
 	UINT64 mCurrentHullShader;
 	UINT64 mCurrentDomainShader;
@@ -499,6 +543,8 @@ public:
 	bool HoldForSecondEye(int kind, UINT p0, UINT p1, UINT p2, UINT p3, UINT p4);
 	void FlushSecondEye();
 	void DrawVRMenuAtFrameEnd();
+	// Present-thread hand-off of the late-2D UI layer captured this frame.
+	void PresentUILayer();
 	void ActivateHighResolutionOverlays();
 	void EndHighResolutionOverlayFrame();
 

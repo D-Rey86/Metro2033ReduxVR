@@ -2065,6 +2065,8 @@ STDMETHODIMP HackerDevice::CreateInputLayout(THIS_
 	// (_strnicmp, not strncmp) since D3D11 semantic names are matched
 	// case-insensitively by the runtime/HLSL convention.
 	if (SUCCEEDED(ret) && ppInputLayout && *ppInputLayout && pInputElementDescs) {
+		StereoSinglePass::OnCreateInputLayout(mOrigDevice1, pInputElementDescs, NumElements,
+			pShaderBytecodeWithInputSignature, BytecodeLength, *ppInputLayout);
 		static int sLayoutDiagCount = 0;
 		bool matched = false;
 		for (UINT i = 0; i < NumElements; i++) {
@@ -3292,6 +3294,38 @@ STDMETHODIMP HackerDevice::CreateShader(THIS_
 	return hr;
 }
 
+// Metro2033ReduxVR occlusion investigation: the shaders that build the 160x88
+// occlusion depth buffer, disassembled once to the game folder, so how they
+// read their depth input can be checked instead of assumed.
+static void DumpOcclusionShaderIfWanted(ID3D11DeviceChild *shader, const void *bytecode,
+	SIZE_T length, const char *kind)
+{
+	if (!shader || !bytecode)
+		return;
+	UINT64 hash = 0;
+	EnterCriticalSection(&G->mCriticalSection);
+	{
+		ShaderMap::iterator i = G->mShaders.find(shader);
+		if (i != G->mShaders.end())
+			hash = i->second;
+	}
+	LeaveCriticalSection(&G->mCriticalSection);
+	if (hash != 0x57A76494770B958Eull && hash != 0x34A1EDEC6AD71217ull)
+		return;
+	static std::set<UINT64> dumped;
+	if (!dumped.insert(hash).second)
+		return;
+	const std::string asmText = BinaryToAsmText(bytecode, length, false);
+	char path[64];
+	_snprintf_s(path, sizeof(path), _TRUNCATE, "occ_%s_%016llX.txt", kind, (unsigned long long)hash);
+	FILE *f = NULL;
+	if (fopen_s(&f, path, "wb") == 0 && f) {
+		if (!asmText.empty())
+			fwrite(asmText.c_str(), 1, asmText.size(), f);
+		fclose(f);
+	}
+}
+
 STDMETHODIMP HackerDevice::CreateVertexShader(THIS_
 	/* [annotation] */
 	__in  const void *pShaderBytecode,
@@ -3303,6 +3337,15 @@ STDMETHODIMP HackerDevice::CreateVertexShader(THIS_
 	__out_opt  ID3D11VertexShader **ppVertexShader)
 {
 	LogInfo("HackerDevice::CreateVertexShader called with BytecodeLength = %Iu, handle = %p, ClassLinkage = %p\n", BytecodeLength, pShaderBytecode, pClassLinkage);
+	struct CreateTimer {
+		LARGE_INTEGER start;
+		CreateTimer() { QueryPerformanceCounter(&start); }
+		~CreateTimer() {
+			LARGE_INTEGER end;
+			QueryPerformanceCounter(&end);
+			StereoSinglePass::NoteShaderCreate(false, end.QuadPart - start.QuadPart);
+		}
+	} createTimer;
 
 	HRESULT hr = CreateShader<ID3D11VertexShader, &ID3D11Device::CreateVertexShader>
 			(pShaderBytecode, BytecodeLength, pClassLinkage, ppVertexShader, L"vs");
@@ -3315,9 +3358,11 @@ STDMETHODIMP HackerDevice::CreateVertexShader(THIS_
 	// load while we were dumping - correct in the rooms we tested, silently
 	// wrong everywhere else, which is disqualifying for a release. Patching
 	// here catches every shader the game will ever create.
-	if (SUCCEEDED(hr) && ppVertexShader && *ppVertexShader)
+	if (SUCCEEDED(hr) && ppVertexShader && *ppVertexShader) {
 		StereoSinglePass::OnCreateVertexShader(mOrigDevice1, pShaderBytecode,
 			BytecodeLength, *ppVertexShader);
+		DumpOcclusionShaderIfWanted(*ppVertexShader, pShaderBytecode, BytecodeLength, "vs");
+	}
 
 	// TASK 27: dump the viewmodel's vertex shaders, once each.
 	//
@@ -3441,6 +3486,15 @@ STDMETHODIMP HackerDevice::CreatePixelShader(THIS_
 	__out_opt  ID3D11PixelShader **ppPixelShader)
 {
 	LogInfo("HackerDevice::CreatePixelShader called with BytecodeLength = %Iu, handle = %p, ClassLinkage = %p\n", BytecodeLength, pShaderBytecode, pClassLinkage);
+	struct CreateTimer {
+		LARGE_INTEGER start;
+		CreateTimer() { QueryPerformanceCounter(&start); }
+		~CreateTimer() {
+			LARGE_INTEGER end;
+			QueryPerformanceCounter(&end);
+			StereoSinglePass::NoteShaderCreate(true, end.QuadPart - start.QuadPart);
+		}
+	} createTimer;
 
 	HRESULT hr = CreateShader<ID3D11PixelShader, &ID3D11Device::CreatePixelShader>
 			(pShaderBytecode, BytecodeLength, pClassLinkage, ppPixelShader, L"ps");
@@ -3448,9 +3502,11 @@ STDMETHODIMP HackerDevice::CreatePixelShader(THIS_
 	// Metro2033ReduxVR single-pass stereo: record which texture slots this
 	// shader really samples, so a draw can be judged on what it reads rather
 	// than on what happens to be left bound from an earlier pass.
-	if (SUCCEEDED(hr) && ppPixelShader && *ppPixelShader)
+	if (SUCCEEDED(hr) && ppPixelShader && *ppPixelShader) {
 		StereoSinglePass::OnCreatePixelShader(mOrigDevice1, pShaderBytecode,
 			BytecodeLength, *ppPixelShader);
+		DumpOcclusionShaderIfWanted(*ppPixelShader, pShaderBytecode, BytecodeLength, "ps");
+	}
 
 	return hr;
 }

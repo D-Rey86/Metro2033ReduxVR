@@ -66,8 +66,52 @@ namespace VRPose {
 	// Presents the mod settings UI as a compositor-owned, head-relative quad.
 	// The menu texture is independent of Metro's stereo scene targets.
 	bool PresentMenuOverlay(ID3D11Texture2D *texture);
+	// Profiler HUD: its own head-relative overlay below the line of sight.
+	// The texture is re-uploaded only when contentChanged.
+	bool PresentPerfOverlay(ID3D11Texture2D *texture, bool contentChanged);
+	void HidePerfOverlay();
 	void NotifyFullscreenVideoDraw(unsigned frame);
 	bool IsFullscreenVideoFrame(unsigned frame);
+	// Cinema frames (after S.T.A.L.K.E.R. VR): loading screens with no 3D
+	// scene are presented on one room-fixed screen for both eyes with their
+	// 2D UI left native, instead of per-eye HUD placement where every 2D image
+	// lands differently in each eye. UpdateCinemaFrame runs after Present and
+	// decides for the next frame.
+	void UpdateCinemaFrame();
+	bool IsCinemaFrame();
+	// A 3D scene pass (scene-sized colour target with depth) was bound in
+	// `frame`. The loading-panel shader also draws the "press any button"
+	// prompt over the live 3D fly-through; only a frame WITHOUT a 3D scene
+	// is a real loading screen.
+	void NotifySceneRendered(unsigned frame);
+	// The deferred G-buffer fill (three scene-sized colour targets plus depth)
+	// was bound in `frame`. Only a real, lit 3D scene does this; it is the
+	// primary "3D scene present" signal for the screen-state rules.
+	void NotifyGBufferRendered(unsigned frame);
+	// Metro's front-end mode byte == 1 (main-menu level), read once per
+	// Present in UpdateCinemaFrame - cheap for per-draw callers.
+	bool IsNativeMainMenuCached();
+	// Present / hide the late-2D UI layer (HackerContext::ActivateUILayer) as
+	// one head-relative compositor quad.
+	bool PresentUILayerOverlay(ID3D11Texture2D *texture);
+	void HideUILayerOverlay();
+	// The start-up fly-through before the main menu has been shown once and
+	// before gameplay: Metro keeps Artyom's viewmodel out of sight there with
+	// its own transform, which the VR hand placement would otherwise undo.
+	bool IsStartupIntro();
+	// The next frame's post-composite 2D goes to the UI-layer quad: a
+	// non-gameplay 3D screen with a working OpenVR overlay (decided in
+	// UpdateCinemaFrame; see HackerContext::ActivateUILayer).
+	bool IsUILayerScreen();
+
+	// Present-step trace in vr_compatibility_log.txt (always on, unbuffered).
+	// Active for the first frames of a session and for a few frames after
+	// ArmTrace, so a hang can be pinned to the exact step it happened in.
+	void TraceStep(const char *step);
+	void TraceFrameEnd();
+	void ArmTrace(const char *reason, int frames);
+	// Frames the OpenVR compositor has accepted so far this session.
+	unsigned SuccessfulCompositorFrames();
 
 	// Releases the private submission texture. Called when the swap
 	// chain is going away/resizing so we don't hold a stale texture of

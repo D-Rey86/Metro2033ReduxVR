@@ -56,7 +56,7 @@ namespace {
 		// Picture, Controls, UI, Advanced. Display-only headings and the current
 		// resolution readout are deliberately absent so selection and highlight
 		// geometry always describe the same rows.
-		static const int rows[kTabCount] = { 8, 6, 6, 16 };
+		static const int rows[kTabCount] = { 8, 6, 7, 16 };
 		return rows[sCurrentTab];
 	}
 
@@ -114,7 +114,8 @@ namespace {
 			else if (sSelectedRow == 2) s.hudPosition[1] += direction * 0.01f;
 			else if (sSelectedRow == 3) s.hudSize = max(0.25f, min(2.0f, s.hudSize + direction * 0.05f));
 			else if (sSelectedRow == 4) s.ammoCounterEnabled = !s.ammoCounterEnabled;
-			else if (sSelectedRow == 5) ResetCurrentCategory();
+			else if (sSelectedRow == 5) s.perfHud = !s.perfHud;
+			else if (sSelectedRow == 6) ResetCurrentCategory();
 			// These are angular sight-zero offsets, not unrestricted HUD
 			// translation. Keep calibration fine-grained and bounded for now.
 			s.hudPosition[0] = max(-1.0f, min(1.0f, s.hudPosition[0]));
@@ -258,6 +259,7 @@ void Save()
 		s.weaponRotation[0], s.weaponRotation[1], s.weaponRotation[2]);
 	fprintf(f, "hud_position=%.5f,%.5f,%.5f\n",
 		s.hudPosition[0], s.hudPosition[1], s.hudPosition[2]);
+	fprintf(f, "perf_hud=%d\n", s.perfHud ? 1 : 0);
 	fclose(f);
 }
 
@@ -347,6 +349,7 @@ void Initialize()
 		ReadVec3(f, "weapon_position", sSettings.weaponPosition);
 		ReadVec3(f, "weapon_rotation", sSettings.weaponRotation);
 		ReadVec3(f, "hud_position", sSettings.hudPosition);
+		ReadBool(f, "perf_hud", &sSettings.perfHud);
 		fclose(f);
 	}
 	sInitialized = true;
@@ -586,6 +589,7 @@ void ResetCurrentCategory()
 		memcpy(sSettings.hudPosition, defaults.hudPosition,
 			sizeof(sSettings.hudPosition));
 		sSettings.hudSize = defaults.hudSize;
+		sSettings.perfHud = defaults.perfHud;
 		break;
 	case 3:
 		memcpy(sSettings.weaponPosition, defaults.weaponPosition,
