@@ -627,31 +627,25 @@ STDMETHODIMP HackerSwapChain::Present(THIS_
 		VRPose::AdvanceStereoEye();
 		VRPerf::Stamp(VRPerf::kAfterSubmit);
 
-		// Development-only performance telemetry. None of these calls contributes
-		// to rendering: they collect a render graph, issue GPU timestamp queries,
-		// aggregate counters, and write periodic reports. Leaving them active in a
-		// gameplay build adds driver/query and synchronous log activity precisely
-		// on the Present boundary, where it can become a visible hitch.
-		// Cheap enough to leave on: it sums counters the draw path already
-		// increments and formats one line every 600 frames, for the profiler
-		// summary. Without it "folded 0" has no explanation.
-		if (const char *singlePassStats = StereoSinglePass::ReportFrameStats())
-			VRPerf::Note(singlePassStats);
-		// Which of our own sites the doubled draws' constant-buffer calls go to.
-		if (const char *eyeCBCensus = StereoTwin::ReportEyeCBCensus())
-			VRPerf::Note(eyeCBCensus);
-		if (const char *mapSplit = StereoTwin::ReportMapSplit())
-			VRPerf::Note(mapSplit);
-		if (const char *unmapSections = StereoTwin::ReportUnmapSections())
-			VRPerf::Note(unmapSections);
-		if (const char *hookSites = VRPerf::ReportSites())
-			VRPerf::Note(hookSites);
-		if (const char *drawSections = StereoTwin::ReportDrawSections())
-			VRPerf::Note(drawSections);
-		if (const char *shaderCreation = StereoSinglePass::ReportShaderCreation())
-			VRPerf::Note(shaderCreation);
-		if (const char *foldPolicy = StereoSinglePass::ReportFoldPolicy())
-			VRPerf::Note(foldPolicy);
+		// Profiler reports, only while the profiler is active (vr_perf.txt).
+		if (VRPerf::Active()) {
+			if (const char *singlePassStats = StereoSinglePass::ReportFrameStats())
+				VRPerf::Note(singlePassStats);
+			if (const char *eyeCBCensus = StereoTwin::ReportEyeCBCensus())
+				VRPerf::Note(eyeCBCensus);
+			if (const char *mapSplit = StereoTwin::ReportMapSplit())
+				VRPerf::Note(mapSplit);
+			if (const char *unmapSections = StereoTwin::ReportUnmapSections())
+				VRPerf::Note(unmapSections);
+			if (const char *hookSites = VRPerf::ReportSites())
+				VRPerf::Note(hookSites);
+			if (const char *drawSections = StereoTwin::ReportDrawSections())
+				VRPerf::Note(drawSections);
+			if (const char *shaderCreation = StereoSinglePass::ReportShaderCreation())
+				VRPerf::Note(shaderCreation);
+			if (const char *foldPolicy = StereoSinglePass::ReportFoldPolicy())
+				VRPerf::Note(foldPolicy);
+		}
 
 		static const bool kPerformanceTelemetryEnabled = false;
 		if (kPerformanceTelemetryEnabled) {
@@ -662,9 +656,6 @@ STDMETHODIMP HackerSwapChain::Present(THIS_
 				mHackerDevice->GetPassThroughOrigDevice1(),
 				mHackerDevice->GetPassThroughOrigContext1());
 			ReportEyeCBCost();
-			// NOT ReportFrameStats() again: it is called unconditionally above,
-			// and a second call per frame would zero the accumulator twice and
-			// halve every rate it prints.
 			StereoSinglePass::ReportPatchStats();
 		}
 	}

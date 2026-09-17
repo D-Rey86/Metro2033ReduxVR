@@ -73,7 +73,11 @@ namespace StereoSinglePass {
 		// copies apart, so keep this screen-space video on the ordinary per-eye
 		// path instead.
 		static const UINT64 kFullscreenVideoVS = 0xD2B663AAD70298CEull;
+		// Lamp lens flare: may be drawn from a private vertex buffer with its ghost
+		// quads collapsed (HackerContext LampFlareBegin).
+		static const UINT64 kLampGlowVS = 0x77840E246BBF6E55ull;
 		if (hash == kUnsafeTexturedWorldVS ||
+			hash == kLampGlowVS ||
 			hash == kUnsafeWorldDepthVS ||
 			hash == kUnsafeTexturedDecalVS ||
 			hash == kUnsafeCorridorWorldVS ||
@@ -101,10 +105,8 @@ namespace StereoSinglePass {
 	unsigned gFoldableIfDepth = 0;
 	bool gVPRTSupported = false;
 
-	// Beside OUR DLL, not relative to the process working directory: the first
-	// attempt probed a bare filename, the game's working directory is not the
-	// game folder, and a whole play session was captured with the switch
-	// silently off. Same resolution HackerContext uses for its dumps.
+	// Resolves a marker file name beside this DLL; the process working directory
+	// is not the game folder.
 	static bool FoldFlagPath(const wchar_t *name, wchar_t *out, size_t outCount)
 	{
 		// A path that does not fit is treated as "no such file". The _s string
@@ -132,95 +134,27 @@ namespace StereoSinglePass {
 		return GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES;
 	}
 
+	// Folding the scene-resolution buffers (G-buffer and lighting chain) is on
+	// by default; vr_fold_scene_off.txt beside d3d11.dll keeps them on
+	// double-draw.
 	bool FoldSceneBufferEnabled()
 	{
 		static int state = -1;
 		if (state < 0)
-			state = FoldFlagPresent(L"vr_fold_scene.txt") ? 1 : 0;
+			state = FoldFlagPresent(L"vr_fold_scene_off.txt") ? 0 : 1;
 		return state != 0;
 	}
 
+	// Scene-buffer geometry is depth-tested by definition, so the two gates open
+	// together.
 	bool FoldDepthTestedEnabled()
 	{
-		static int state = -1;
-		if (state < 0)
-			state = FoldFlagPresent(L"vr_fold_depth.txt") ? 1 : 0;
-		// Scene-buffer geometry is depth-tested by definition, so that switch
-		// implies this one - one file is enough to open the whole scene path.
-		return state != 0 || FoldSceneBufferEnabled();
+		return FoldSceneBufferEnabled();
 	}
 
 	bool FlagFilePresent(const wchar_t *name)
 	{
 		return FoldFlagPresent(name);
-	}
-
-	bool FoldInstancedEnabled()
-	{
-		static int state = -1;
-		if (state < 0)
-			state = FoldFlagPresent(L"vr_fold_instanced.txt") ? 1 : 0;
-		return state != 0;
-	}
-
-	namespace {
-		struct InstanceLayout {
-			ID3D11InputLayout *doubled;   // owned; NULL when no per-instance data
-			bool perInstance;
-		};
-		SRWLOCK sLayoutLock = SRWLOCK_INIT;
-		std::unordered_map<ID3D11InputLayout *, InstanceLayout> sInstanceLayouts;
-	}
-
-	void OnCreateInputLayout(ID3D11Device *device, const D3D11_INPUT_ELEMENT_DESC *elements,
-		UINT count, const void *signature, SIZE_T signatureLength, ID3D11InputLayout *created)
-	{
-		if (!device || !elements || !created || !FoldInstancedEnabled())
-			return;
-		InstanceLayout entry = { NULL, false };
-		std::vector<D3D11_INPUT_ELEMENT_DESC> doubled(elements, elements + count);
-		for (D3D11_INPUT_ELEMENT_DESC &e : doubled) {
-			if (e.InputSlotClass != D3D11_INPUT_PER_INSTANCE_DATA)
-				continue;
-			entry.perInstance = true;
-			// Step 0 means "never advance"; those elements need no change.
-			if (e.InstanceDataStepRate)
-				e.InstanceDataStepRate *= 2;
-		}
-		// A layout that needed doubling but could not get it stays out of the
-		// table: an unknown layout is never folded.
-		if (entry.perInstance && FAILED(device->CreateInputLayout(doubled.data(), count,
-				signature, signatureLength, &entry.doubled)))
-			return;
-		AcquireSRWLockExclusive(&sLayoutLock);
-		auto it = sInstanceLayouts.find(created);
-		ID3D11InputLayout *stale = it != sInstanceLayouts.end() ? it->second.doubled : NULL;
-		sInstanceLayouts[created] = entry;
-		ReleaseSRWLockExclusive(&sLayoutLock);
-		if (stale)
-			stale->Release();
-	}
-
-	bool InstanceFoldLayout(ID3D11InputLayout *layout, ID3D11InputLayout **bind)
-	{
-		*bind = NULL;
-		if (!layout)
-			return false;
-		AcquireSRWLockShared(&sLayoutLock);
-		auto it = sInstanceLayouts.find(layout);
-		const bool known = it != sInstanceLayouts.end();
-		if (known)
-			*bind = it->second.doubled;
-		ReleaseSRWLockShared(&sLayoutLock);
-		return known;
-	}
-
-	bool UnmapLegacyEnabled()
-	{
-		static int state = -1;
-		if (state < 0)
-			state = FoldFlagPresent(L"vr_unmap_legacy.txt") ? 1 : 0;
-		return state != 0;
 	}
 
 	// Vertex-shader hashes the player has taken off the folded path.
@@ -252,25 +186,16 @@ namespace StereoSinglePass {
 		if (reported)
 			return NULL;
 		reported = true;
-		// The resolved directory goes in the line as well: the switch was once
-		// probed against the wrong directory and a whole session was wasted.
+		// Include the resolved directory so a misplaced marker file is visible.
 		wchar_t path[MAX_PATH] = L"";
 		char dir[MAX_PATH] = "";
 		if (FoldFlagPath(L"", path, MAX_PATH))
 			WideCharToMultiByte(CP_ACP, 0, path, -1, dir, MAX_PATH, NULL, NULL);
-		static char line[1024];
-		sprintf_s(line, "fold policy: scene buffers %s, depth-tested %s, vprt=%d, "
-			"unmap cuts %s, instanced %s | expanded-visibility bypasses left out: occlusion %s, "
-			"object %s, cluster %s (apply only when the menu option is on) | switches looked for in %s "
-			"(vr_fold_scene.txt / vr_fold_depth.txt / vr_fold_exclude.txt / vr_unmap_legacy.txt / "
-			"vr_fold_instanced.txt / vr_vis_*_bypass_off.txt)",
+		static char line[512];
+		sprintf_s(line, "fold policy: scene buffers %s, depth-tested %s, vprt=%d | switches looked for in %s "
+			"(vr_fold_scene_off.txt / vr_fold_exclude.txt)",
 			FoldSceneBufferEnabled() ? "ON" : "off",
 			FoldDepthTestedEnabled() ? "ON" : "off", gVPRTSupported ? 1 : 0,
-			UnmapLegacyEnabled() ? "OFF (legacy)" : "ON",
-			FoldInstancedEnabled() ? "ON" : "off",
-			FoldFlagPresent(L"vr_vis_occlusion_bypass_off.txt") ? "yes" : "no",
-			FoldFlagPresent(L"vr_vis_object_bypass_off.txt") ? "yes" : "no",
-			FoldFlagPresent(L"vr_vis_cluster_bypass_off.txt") ? "yes" : "no",
 			dir[0] ? dir : "(unknown)");
 		return line;
 	}
@@ -280,10 +205,7 @@ namespace StereoSinglePass {
 		static unsigned lastLogged = 0;
 		static unsigned accFrames = 0;
 		static unsigned acc[15] = { 0 };
-		// NOT gDraws: VRPerf reads that one as a delta of a running total for
-		// the CSV's folded_draws column, so zeroing it here made that column
-		// (and the WORKLOAD line built from it) read 0 on every frame while
-		// these notes showed the true 187-368. Take a delta here instead.
+		// gDraws is a running total also read by VRPerf: take a delta, never zero it.
 		unsigned *counters[14] = {
 			&gDeclinedNoVariant, &gDeclinedReadsEye, &gDeclinedTessellated,
 			&gDeclinedDisabled, &gDeclinedPrivateCB, &gDeclinedInstanced,
@@ -509,8 +431,7 @@ namespace StereoSinglePass {
 		const LONG64 maxTicks = InterlockedExchange64(&gCreateMaxTicks, 0);
 		if (!vs && !ps && !built)
 			return NULL;
-		// Loading screens create hundreds; the budget keeps the summary readable
-		// while every gameplay-time creation still gets its line.
+		// At most 3000 lines per session.
 		static unsigned lines = 0;
 		if (++lines > 3000)
 			return NULL;
@@ -658,8 +579,8 @@ namespace StereoSinglePass {
 			}
 		}
 
-		// Every outcome below is deterministic for the same bytecode, so a
-		// failure is remembered too and never re-attempted next session.
+		// Failures are deterministic for the same bytecode and are cached as empty
+		// files so they are not retried; device errors are not cached.
 		struct NegativeCache {
 			const wchar_t *path;
 			bool armed;
@@ -733,13 +654,10 @@ namespace StereoSinglePass {
 		sPatchTicks += t1.QuadPart - t0.QuadPart;
 	}
 
-	// Building a variant is a decompile plus a full HLSL compile - tens of
-	// milliseconds. Metro creates shaders during play (new materials, NPCs,
-	// weapons), and doing that work inside its CreateVertexShader call held
-	// its thread long enough to miss a frame, which the compositor answers by
-	// locking to half rate for a second or more. So it runs on a worker; until
-	// the variant exists the draw simply takes the double-draw path.
-	// vr_shader_sync.txt beside the DLL restores the old inline build.
+	// Variants (decompile plus D3DCompile, tens of milliseconds) are built on a
+	// worker so Metro's CreateVertexShader during play does not miss a frame;
+	// draws use double-draw until their variant exists. vr_shader_sync.txt beside
+	// the DLL builds them inline instead.
 	static bool ShaderSyncEnabled()
 	{
 		static int state = -1;
@@ -812,8 +730,6 @@ namespace StereoSinglePass {
 		if (InterlockedCompareExchange(&sWorkerStarted, 3, 0) == 0) {
 			HANDLE thread = CreateThread(NULL, 0, VariantWorker, NULL, 0, NULL);
 			if (thread) {
-				// Below the game's threads: it must never compete with a frame.
-				SetThreadPriority(thread, THREAD_PRIORITY_BELOW_NORMAL);
 				CloseHandle(thread);
 				InterlockedExchange(&sWorkerStarted, 1);
 			} else {
@@ -1037,11 +953,8 @@ namespace StereoSinglePass {
 		// mapping. HackerDevice reserves the room up front instead.
 		if ((int)G->iniParams.size() < kReprojectionParam + 4)
 			return;
-		// Called for every camera write (up to ~100 a frame) with mostly the
-		// same matrix, and each dirty mark cost a Map(DISCARD) of the ini
-		// texture at the next fold. Compared against the live rows rather than
-		// a private copy, so anything else that rewrites or zeroes iniParams
-		// still leads to an upload.
+		// Mark dirty only when the rows change. Compared against G->iniParams, so
+		// another writer of those rows still forces an upload.
 		bool changed = false;
 		for (int row = 0; row < 4; row++) {
 			DirectX::XMFLOAT4 &p = G->iniParams[kReprojectionParam + row];
@@ -1059,13 +972,15 @@ namespace StereoSinglePass {
 	{
 		if (!sReprojectionDirty || !context || !iniTexture || G->iniParams.empty())
 			return;
-		sReprojectionDirty = false;
 
 		D3D11_MAPPED_SUBRESOURCE m;
 		if (SUCCEEDED(context->Map(iniTexture, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
 			memcpy(m.pData, G->iniParams.data(),
 				sizeof(DirectX::XMFLOAT4) * G->iniParams.size());
 			context->Unmap(iniTexture, 0);
+			// Cleared only once uploaded: the rows are pose-independent, so a failed
+			// upload would otherwise never be retried.
+			sReprojectionDirty = false;
 		}
 	}
 

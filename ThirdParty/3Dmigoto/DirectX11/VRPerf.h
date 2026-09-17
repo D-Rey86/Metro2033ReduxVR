@@ -16,8 +16,8 @@
 //
 // Output goes to <game>\vr_perf\<timestamp>_frames.csv (one row per frame)
 // and <game>\vr_perf\<timestamp>_summary.txt (a report every few seconds).
-// It is independent of d3dx.ini [Logging] calls, so d3d11_log.txt can stay
-// off and the numbers are not contaminated by API logging.
+// Off unless vr_perf.txt sits beside d3d11.dll (vr_perf_hud.txt also shows the
+// in-headset HUD). Independent of d3dx.ini [Logging].
 
 #include <intrin.h>
 
@@ -28,9 +28,12 @@ struct ID3D11DepthStencilView;
 
 namespace VRPerf {
 
-	// Development profiling build: on. Set to false to compile every hook
-	// below down to nothing.
+	// Compile-time kill switch. At run time the profiler is also off unless
+	// vr_perf.txt sits beside d3d11.dll; see Active().
 	static const bool kEnabled = true;
+
+	// Decided once. While false no file, thread, GPU query or hook timer is created.
+	bool Active();
 
 	enum Hook {
 		kHookDraw,        // Draw*/Dispatch* including second-eye doubling
@@ -67,11 +70,9 @@ namespace VRPerf {
 	// Every 600 frames, the busiest sites on the D3D thread; NULL in between.
 	const char *ReportSites();
 
-	// Per-call hook timing, cleared while vr_perf_lite.txt sits beside the DLL
-	// (re-checked every 120 frames). Frame-level numbers - thread CPU, GPU,
-	// compositor, draw counts - keep working; only the per-hook columns and
-	// hook-site/section notes go quiet. ~14000 timed calls a frame cost about
-	// 0.3 ms on the D3D thread, which is worth having back while playing.
+	// Per-call hook timing: on while Active() and vr_perf_lite.txt is absent
+	// (re-checked every 120 frames). draw_calls, per-pass draw counts and
+	// d3d_first_call_ms come from hook timing and read 0 while it is off.
 	extern volatile bool gHookTiming;
 
 	struct HookScope {
@@ -118,13 +119,7 @@ namespace VRPerf {
 	bool OverlayVisible();
 	void ToggleOverlay();
 	const char *OverlayText();
-	// Occlusion probe phase shown at the top of the HUD: -1 hidden (probe off),
-	// 0 normal, 1 far, 2 zero. Written by the probe in HackerContext.cpp.
-	extern volatile int gOcclusionProbeMode;
-	// Occlusion depth remap on the HUD: -1 hidden, 0 off (cycle phase), 1 on.
-	extern volatile int gOcclusionRemapState;
-
-	// One-off diagnostic line in the summary file (d3d11_log.txt is off).
+	// Appends one line to the summary file; ignored while the profiler is inactive.
 	void Note(const char *text);
 
 	// A synchronous GPU->CPU readback (staging copy + Map READ) took `ticks`

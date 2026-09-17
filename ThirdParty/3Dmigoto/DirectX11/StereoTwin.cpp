@@ -84,7 +84,7 @@ namespace StereoTwin {
 		static unsigned accFrames = 0;
 		static unsigned long long accTicks[kDrawSecCount] = { 0 };
 		static unsigned long long accHits[kDrawSecCount] = { 0 };
-		// rdtsc -> QPC scale, measured over the whole run rather than assumed.
+		// rdtsc-to-ms scale, calibrated against QPC over the run.
 		static unsigned long long tsc0 = 0;
 		static LARGE_INTEGER qpc0 = {};
 		if (!tsc0) {
@@ -208,7 +208,6 @@ namespace StereoTwin {
 			&gEyeCBRewrites[0], &gEyeCBRewrites[1], &gEyeCBRestores[0], &gEyeCBRestores[1],
 			&gEyeCBPSBinds, &gPaletteTwinBinds, &gPaletteTwinRestores, &gDoubledDraws
 		};
-		// gDoubledDraws is also consumed by the CSV column; read it, do not zero.
 		for (int i = 0; i < 7; i++) {
 			acc[i] += *counters[i];
 			*counters[i] = 0;

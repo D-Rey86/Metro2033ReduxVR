@@ -1638,14 +1638,10 @@ namespace VRPose {
 		const unsigned gbufAge = StampAge(&sGBufferFrame);
 		const unsigned sceneAge = StampAge(&sSceneRenderedFrame);
 		const bool gameplay = IsGameplayModeActive();
-		// Only a real, lit 3D scene fills Metro's deferred G-buffer. A frame
-		// without it is a 2D screen when the loading panel is up, when the front
-		// end (mode 1) has stopped drawing its room - a level load and its
-		// briefing - or before the main menu or gameplay have ever appeared.
-		// The panel shader alone is NOT a loading signal: it also draws the
-		// "press any button" prompt over the live 3D fly-through, which keeps
-		// its G-buffer and stays in stereo. Cinema ends on the first frame that
-		// fills the G-buffer again, so the level's first frames are stereo.
+		// Cinema = no G-buffer this frame and (loading panel up, front-end mode 1,
+		// or before the main menu/gameplay first appeared). The panel alone is not
+		// enough: it also draws the prompt over the 3D fly-through. Cinema ends on the
+		// first frame that fills the G-buffer again.
 		const bool noScene = gbufAge > 1;
 		if (!noScene)
 			sGBufferEverSeen = true;
@@ -1669,15 +1665,10 @@ namespace VRPose {
 		const bool cinema = baseCinema || panelHold;
 		InterlockedExchange(&sCinemaPanelHold, panelHold ? 1 : 0);
 
-		// Late-2D UI layer for the next frame (HackerContext::ActivateUILayer):
-		// a non-gameplay 3D screen whose 2D an OpenVR quad can actually show.
-		// Without one (OpenXR, no HMD, compositor given up, overlay refused,
-		// frames not accepted) the 2D stays in the eye images as before. The
-		// menu mode must hold for two Presents and cinema must have ended 8
-		// frames ago, so the first frames of a level - the mode byte trails the
-		// load - never capture the gameplay HUD. The start-up term uses the
-		// state before this Present, so the fly-through hands over to the menu
-		// without a frame in between.
+		// Late-2D UI layer for the next frame (HackerContext::ActivateUILayer): only
+		// with a working OpenVR overlay, the menu mode stable for two Presents and
+		// at least 8 frames since cinema, so a level's first frames never capture the
+		// gameplay HUD. Otherwise the 2D stays in the eye images.
 		static int sPrevMode = -1;
 		static unsigned sFramesSinceCinema = 999;
 		sFramesSinceCinema = cinema ? 0 : (sFramesSinceCinema < 999 ? sFramesSinceCinema + 1 : 999);
@@ -1689,7 +1680,7 @@ namespace VRPose {
 			((!gameplay && introBefore) || menuStable);
 		InterlockedExchange(&sUILayerScreen, uiLayer ? 1 : 0);
 
-		// Screen-state trace for classifying the remaining cases (always-on log).
+		// Log screen-state changes (at most 300 lines).
 		static int sLastMode = -2;
 		static bool sLastScene = false, sLastPanel = false, sLastGameplay = false;
 		static bool sLastUILayer = false;
@@ -1725,11 +1716,9 @@ namespace VRPose {
 			ArmTrace("cinema transition", 4);
 			InterlockedExchange(&sCinemaFrameActive, cinema ? 1 : 0);
 		}
-		// Deliberately NOT touching the global VR flags (vrHeadRotationValid /
-		// vrStereoParamsValid): clearing them for a whole start-up sequence left
-		// the second eye without its own matrices for the rest of the session.
-		// A cinema frame has no 3D scene by definition, so the camera is moot;
-		// only its flat UI is kept native (BeginUniversalUICB).
+		// vrHeadRotationValid / vrStereoParamsValid are left alone: the second eye
+		// needs its matrices across the start-up sequence. A cinema frame has no 3D
+		// scene, so only its flat UI is kept native (BeginUniversalUICB).
 	}
 
 	bool IsCinemaFrame()
@@ -2901,9 +2890,8 @@ namespace VRPose {
 		if (!sVRSystem)
 			return;
 
-		// Stereo Separation is a live eye-position scale. Rebuild the offsets
-		// from OpenVR every call so changing the menu slider never compounds a
-		// previous adjustment. 63.5 mm is the menu's neutral/default value.
+		// Stereo Separation is a live eye-position scale; offsets are rebuilt from
+		// OpenVR (never scaled incrementally). 63.5 mm is the menu's neutral value.
 		const VRMenu::Settings &menu = VRMenu::GetSettings();
 		const float separationScale = max(0.1f, min(3.0f,
 			menu.stereoSeparationMm / 63.5f));
@@ -20433,29 +20421,104 @@ namespace VRPose {
 			"at +0x826B50 (culling only)\n");
 	}
 
-	// Each expanded-visibility bypass can be left out on its own with a marker
-	// file beside d3d11.dll, read once at launch like the menu choice itself.
-	// The occlusion bypass makes Metro submit everything hidden behind walls;
-	// the two frustum bypasses are what fix edge pop-in. Measuring them apart
-	// says which one the framerate is paying for. The profiler's policy line
-	// reports the same files (StereoSinglePass::ReportFoldPolicy).
-	enum VisibilityBypass { kVisOcclusion, kVisObject, kVisCluster };
-	static bool VisibilityBypassLeftOut(VisibilityBypass which)
+	// A committed page within rel32 reach of the executable (for redirected
+	// RIP-relative operands), searched downward from the image base first.
+	static BYTE *AllocNearModule(DWORD64 base, DWORD64 end)
 	{
-		static int leftOut[3] = { -1, -1, -1 };
-		if (leftOut[0] < 0) {
-			leftOut[kVisObject] = StereoSinglePass::FlagFilePresent(L"vr_vis_object_bypass_off.txt") ? 1 : 0;
-			leftOut[kVisCluster] = StereoSinglePass::FlagFilePresent(L"vr_vis_cluster_bypass_off.txt") ? 1 : 0;
-			leftOut[kVisOcclusion] = StereoSinglePass::FlagFilePresent(L"vr_vis_occlusion_bypass_off.txt") ? 1 : 0;
-			LogInfo("VRPose visibility policy: occlusion bypass %s, object frustum bypass %s, "
-				"cluster frustum bypass %s\n", leftOut[kVisOcclusion] ? "OFF" : "on",
-				leftOut[kVisObject] ? "OFF" : "on", leftOut[kVisCluster] ? "OFF" : "on");
+		const DWORD64 kStep = 0x100000;
+		for (DWORD64 d = kStep; d < 0x40000000ull; d += kStep) {
+			if (base > d + 0x10000) {
+				void *p = VirtualAlloc((LPVOID)((base - d) & ~0xFFFFull), 0x1000,
+					MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+				if (p)
+					return (BYTE *)p;
+			}
+			void *p = VirtualAlloc((LPVOID)((end + d) & ~0xFFFFull), 0x1000,
+				MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+			if (p)
+				return (BYTE *)p;
 		}
-		return leftOut[which] != 0;
+		return NULL;
+	}
+
+	// Rewrites a live disp32 with a single 4-byte store.
+	static void WriteDisp32(BYTE *at, LONG value)
+	{
+		DWORD old = 0;
+		if (!VirtualProtect(at, sizeof(LONG), PAGE_EXECUTE_READWRITE, &old))
+			return;
+		InterlockedExchange((LONG *)at, value);
+		DWORD ignored = 0;
+		VirtualProtect(at, sizeof(LONG), old, &ignored);
+		FlushInstructionCache(GetCurrentProcess(), at, sizeof(LONG));
+	}
+
+	// Deferred light culling FOV.
+	//
+	// Metro culls deferred lights with a camera whose vertical FOV is the world
+	// FOV (RVA 0xCE710C) read at +0x69CC72 (`mulss xmm3, [fov]`). That camera is
+	// much narrower than the headset, so lights above the view were dropped when
+	// looking up and nearby characters lost their lighting. Only this operand is
+	// pointed at a private 110-degree value; the world FOV itself is untouched.
+	// Known side effect: faint dark shapes can appear at the very bottom of the
+	// view near some lights. vr_vis_light_fov_off.txt leaves the code unpatched.
+	static void ApplyLightCullingFov()
+	{
+		static int state = -1;   // -1 not tried, 0 not applied, 1 applied
+		static BYTE *disp = NULL;
+		static LONG redirected = 0;
+		static float *value = NULL;
+		if (state < 0) {
+			state = 0;
+			if (StereoSinglePass::FlagFilePresent(L"vr_vis_light_fov_off.txt"))
+				return;
+			static const BYTE kSignature[8] = { 0xF3, 0x0F, 0x59, 0x1D, 0x92, 0xA4, 0x64, 0x00 };
+			const HMODULE exe = GetModuleHandleA(NULL);
+			BYTE *at = exe ? (BYTE *)exe + 0x69CC72 : NULL;
+			BYTE bytes[8] = {};
+			SIZE_T got = 0;
+			if (at && ReadProcessMemory(GetCurrentProcess(), at, bytes, sizeof(bytes), &got)
+				&& got == sizeof(bytes) && memcmp(bytes, kSignature, sizeof(bytes)) == 0) {
+				const DWORD64 base = (DWORD64)exe;
+				const IMAGE_NT_HEADERS64 *nt = (const IMAGE_NT_HEADERS64 *)((const BYTE *)exe
+					+ ((const IMAGE_DOS_HEADER *)exe)->e_lfanew);
+				if (BYTE *page = AllocNearModule(base, base + nt->OptionalHeader.SizeOfImage)) {
+					value = (float *)(page + 0x800);
+					*value = 110.0f;
+					const LONG64 rel = (LONG64)(DWORD64)value - (LONG64)(DWORD64)(at + 8);
+					if (rel == (LONG64)(LONG)rel) {
+						disp = at + 4;
+						redirected = (LONG)rel;
+						state = 1;
+					}
+				}
+			}
+			LogInfo("VRPose light culling FOV: %s\n", state == 1
+				? "applied at +0x69CC72" : "signature or allocation mismatch, not applied");
+		}
+		if (state == 1 && *(LONG *)disp != redirected)
+			WriteDisp32(disp, redirected);
+	}
+
+	// The broad expanded-visibility bypasses cost frame time and are not needed
+	// with the occlusion depth remap in HackerContext. Each can still be enabled
+	// with a marker file beside d3d11.dll (vr_vis_occlusion_bypass_on.txt,
+	// vr_vis_object_bypass_on.txt, vr_vis_cluster_bypass_on.txt), read once.
+	enum VisibilityBypass { kVisOcclusion, kVisObject, kVisCluster };
+	static bool VisibilityBypassWanted(VisibilityBypass which)
+	{
+		static int wanted[3] = { -1, -1, -1 };
+		if (wanted[0] < 0) {
+			wanted[kVisOcclusion] = StereoSinglePass::FlagFilePresent(L"vr_vis_occlusion_bypass_on.txt") ? 1 : 0;
+			wanted[kVisObject] = StereoSinglePass::FlagFilePresent(L"vr_vis_object_bypass_on.txt") ? 1 : 0;
+			wanted[kVisCluster] = StereoSinglePass::FlagFilePresent(L"vr_vis_cluster_bypass_on.txt") ? 1 : 0;
+		}
+		return wanted[which] != 0;
 	}
 
 	void ForceWideCullingFov()
 	{
+		ApplyLightCullingFov();
 		// These patches are the broad expanded-visibility mode. They modify live
 		// executable code, so VRMenu captures the saved choice at process startup;
 		// never install or restore them in response to a mid-frame menu change.
@@ -20463,11 +20526,11 @@ namespace VRPose {
 		// native world-list coverage paths in one coherent launch-time state.
 		if (!VRMenu::ExpandedVisibilityActive())
 			return;
-		if (!VisibilityBypassLeftOut(kVisOcclusion))
+		if (VisibilityBypassWanted(kVisOcclusion))
 			InstallCpuScreenOcclusionBypass();
-		if (!VisibilityBypassLeftOut(kVisObject))
+		if (VisibilityBypassWanted(kVisObject))
 			InstallObjectFrustumBypass();
-		if (!VisibilityBypassLeftOut(kVisCluster))
+		if (VisibilityBypassWanted(kVisCluster))
 			InstallClusterFrustumBypass();
 		return;
 		// Metro 2033 Redux Steam keeps the world camera's vertical FOV here.

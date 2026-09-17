@@ -206,10 +206,7 @@ namespace StereoTwin {
 	extern unsigned gDoubledDraws;
 	extern unsigned gSharedDraws;
 	extern unsigned gEyeCBSwaps;
-	// Where the constant-buffer calls of a doubled draw actually go. Measured:
-	// 3.85 calls and 3.2 us per doubled draw, against 732 calls and 0.2 ms for
-	// everything the game itself does - so this bucket IS the doubling, and
-	// this census says which of our own sites to cut first.
+	// Per-site counts of eye constant-buffer work done by doubled draws.
 	extern unsigned gEyeCBRewrites[2];    // Map+Unmap of the game's buffer, per slot
 	extern unsigned gEyeCBRestores[2];    // putting the left eye's bytes back
 	extern unsigned gEyeCBPSBinds;        // eye1CB bound to the pixel stage
@@ -218,9 +215,7 @@ namespace StereoTwin {
 	// One line for the profiler summary every 600 frames, NULL in between.
 	const char *ReportEyeCBCensus();
 
-	// How much of a hooked Map/Unmap is the DRIVER and how much is our hook
-	// body. Cutting the body three times moved the measured cost from 0.87 to
-	// 0.86 us/call, so this settles whether anything is left to cut here.
+	// Map/Unmap time split between the driver call and the hook body.
 	extern unsigned long long gMapDriverTicks, gMapBodyTicks, gMapDriverCalls;
 	extern unsigned long long gUnmapDriverTicks, gUnmapBodyTicks, gUnmapDriverCalls;
 	const char *ReportMapSplit();

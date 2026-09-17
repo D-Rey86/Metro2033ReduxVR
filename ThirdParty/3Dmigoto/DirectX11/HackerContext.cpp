@@ -55,15 +55,9 @@
 
 // -----------------------------------------------------------------------------------------------
 
-// Metro2033ReduxVR: the draw classifiers below ask "what is this shader's hash"
-// for the currently bound vertex and pixel shader many times per draw - each a
-// G->mShaders hash-map find, about 7-9 per draw across ~2300 draws a frame.
-// SetShader already resolves exactly that at bind time, so it records the
-// answer for the bound VS and PS here and the classifiers read it back.
-//
-// A bound shader cannot be released while bound, so its handle cannot be
-// reused for another shader while these entries describe it. Per thread, so a
-// context used from another thread keeps its own consistent pair.
+// Metro2033ReduxVR: per-thread cache of the bound VS/PS hashes, filled in
+// SetShader so the draw classifiers skip the G->mShaders lookup. A bound shader
+// cannot be released, so its handle cannot be reused while cached.
 static thread_local ID3D11DeviceChild *tFastBoundVS = NULL, *tFastBoundPS = NULL;
 static thread_local UINT64 tFastBoundVSHash = 0, tFastBoundPSHash = 0;
 static thread_local bool tFastBoundVSFound = false, tFastBoundPSFound = false;
@@ -3499,6 +3493,14 @@ static bool IsUniversalUIDraw(ID3D11VertexShader *vs, ID3D11PixelShader *ps,
 		GetPS0TextureSize(origContext, &tw, &th);
 		return !(tw == 32 && th == 32);   // exclude the true reticle
 	}
+	// Chapter-select picture: its other layers use these pixel shaders with the
+	// same m_screen as the kReticlePS layer above (a panel in front of Metro's
+	// camera, scaled by its projection). Left native they fly with the head apart
+	// from the television. Outside gameplay only, so they take the same world-UI
+	// reprojection as that layer; the gameplay HUD is untouched.
+	if ((psHash == 0x50880FC8F57AB1FDull || psHash == 0x74EE4A3DEE5AFADBull
+			|| psHash == 0xF2A3205743BE2EDEull) && !IsLikelyInGameplay())
+		return true;
 	return false;
 }
 
@@ -3971,13 +3973,9 @@ void HackerContext::BeginUniversalUICB(bool matches, UINT indexCount, bool watch
 		if (!BuildWorldUIScreenMatrix(mUIGameCB, 0, cb))
 			return;   // no usable game projection yet - likewise leave it alone
 	} else if (VRPose::IsNativeMainMenuCached() && IsMainMenuOffscreenUITarget()) {
-		// Main-menu flat UI drawn into an OFF-SCREEN texture - the mission
-		// select television's screen - rather than the eye image. Moving it
-		// onto the view-locked HUD plane bakes each eye's own offset into that
-		// texture, so the two eyes' televisions showed different pictures and
-		// the mission text doubled. Leave the game's own matrix: both eyes
-		// render identical content into the texture and the television, a
-		// real 3D object, gives it the correct stereo depth.
+		// Flat UI rendered into an off-screen texture (the menu television) keeps the
+		// game's matrix: a per-eye offset would bake different images into a texture
+		// both eyes sample.
 		NoteMainMenuFlatUI(true);
 		return;
 	} else {
@@ -5307,15 +5305,14 @@ void HackerContext::DrawVRMenu()
 		row(-0.76f,ys[4],0.76f,0.050f); sliderAt("SCOPE SENSITIVITY METERS",-0.66f,ys[4],1.22f,ms.scopeSensitivityMeters,0.01f,0.30f,true);
 		row(-0.76f,ys[5],0.76f,0.038f); resetAt("RESET CONTROLS",ys[5]);
 	} else if(tab==2) {
-		const float ys[7]={0.48f,0.33f,0.18f,0.03f,-0.12f,-0.26f,-0.45f};
+		const float ys[6]={0.48f,0.31f,0.14f,-0.03f,-0.20f,-0.43f};
 		row(-0.76f,ys[0],0.76f,0.045f); checkAt("RETICLE",-0.66f,ys[0],ms.reticleEnabled,true);
-		text("ADJUST RETICLE",-0.66f,0.415f,0.0048f,0.70f,0.52f,0.52f);
+		text("ADJUST RETICLE",-0.66f,0.405f,0.0048f,0.70f,0.52f,0.52f);
 		row(-0.76f,ys[1],0.76f,0.050f); sliderAt("HORIZONTAL AIM",-0.66f,ys[1],1.22f,ms.hudPosition[0],-1,1,true);
 		row(-0.76f,ys[2],0.76f,0.050f); sliderAt("VERTICAL AIM",-0.66f,ys[2],1.22f,ms.hudPosition[1],-1,1,true);
 		row(-0.76f,ys[3],0.76f,0.050f); sliderAt("SIZE",-0.66f,ys[3],1.22f,ms.hudSize,0.25f,2,true);
 		row(-0.76f,ys[4],0.76f,0.045f); checkAt("AMMO COUNTER",-0.66f,ys[4],ms.ammoCounterEnabled,true);
-		row(-0.76f,ys[5],0.76f,0.045f); checkAt("PERFORMANCE HUD",-0.66f,ys[5],ms.perfHud,true); text("FPS  CPU  GPU  REPROJECTION  PASSES",0.10f,ys[5]+0.010f,0.0042f,0.58f,0.60f,0.64f);
-		row(-0.76f,ys[6],0.76f,0.038f); resetAt("RESET UI",ys[6]);
+		row(-0.76f,ys[5],0.76f,0.038f); resetAt("RESET UI",ys[5]);
 	} else {
 		text("WEAPON OFFSET",-0.72f,0.54f,0.0058f,0.88f,0.88f,0.88f);
 		text("LEFT HAND OFFSET",0.08f,0.54f,0.0058f,0.88f,0.88f,0.88f);
@@ -5511,7 +5508,7 @@ namespace {
 
 void HackerContext::DrawPerfHud()
 {
-	const bool visible = VRMenu::GetSettings().perfHud || VRPerf::OverlayVisible();
+	const bool visible = VRPerf::OverlayVisible();
 	if (!visible) {
 		VRPose::HidePerfOverlay();
 		return;
@@ -5758,10 +5755,8 @@ void HackerContext::DrawWatchDisplay()
 			sEye1ViewCorrection3x4, correctedProjection1);
 		VRPose::Multiply4x4Affine3x4(correctedProjection1, M, mvpEye1);
 		mOrigContext1->UpdateSubresource(mAmmoDisplayCB, 0, NULL, mvpEye1, 0, 0);
-		// BeginTwinPass can put its own eye-1 copy of Metro's cb0 on VS b0
-		// (kBindEye1CB), which unbinds this private MVP buffer. Put it back:
-		// without it the right eye's digits are transformed by Metro's
-		// per-object matrices and land somewhere unrelated.
+		// Rebind the private MVP buffer: BeginTwinPass may have bound eye1CB to VS b0
+		// (kBindEye1CB), and the digits would then use Metro's per-object matrices.
 		mOrigContext1->VSSetConstantBuffers(0, 1, &mAmmoDisplayCB);
 		mOrigContext1->DrawIndexed(indexCount, 0, 0);
 		EndTwinPass();
@@ -6253,9 +6248,8 @@ static bool IsMainMenuOffscreenUITarget()
 	return true;
 }
 
-// Records where main-menu flat UI lands, once per target size, in the
-// profiler summary (d3d11_log.txt is off in release builds). This is the
-// evidence for or against the television double-vision fix above.
+// Logs once per target size whether main-menu flat UI stayed native or moved
+// to the HUD plane.
 static void NoteMainMenuFlatUI(bool offscreen)
 {
 	static UINT seen[16][2] = {};
@@ -6277,141 +6271,55 @@ static void *sCurrentRTV = NULL;
 static void *sCurrentDSV = NULL;
 static DXGI_FORMAT sCurrentRTFormat = DXGI_FORMAT_UNKNOWN;
 
-// Metro2033ReduxVR occlusion probe (diagnostic).
-//
-// Every scene frame Metro draws one full-screen pass into a depth-only
-// 640x355 D32F target and one into a 160x88 R32F target: a downsample of the
-// scene depth. 4A engines cull hidden objects on the CPU against exactly such
-// a buffer, and the scene depth here is rendered with the HEADSET's projection
-// and pose - while Metro would read it with its own narrow camera, which fits
-// the pitch-dependent over-culling seen with the occlusion bypass left out.
-//
-// vr_occ_probe_far.txt / vr_occ_probe_zero.txt overwrite that 160x88 buffer
-// right after Metro draws it (FLT_MAX / 0). If the buffer drives occlusion,
-// one of the two turns culling off entirely (draw count jumps to the bypass
-// level) and says which end of the encoding is "far". The probe also logs the
-// shaders that build these passes and whether Metro copies the buffer to a
-// CPU-readable texture.
-// Camera snapshot for the occlusion remap: Metro's own m_VP and m_P from the
-// last main-scene camera write, and the two patched eye m_VP (plus eye views)
-// the scene depth was actually rendered with. Copied to sOccSceneCamera when
-// the G-buffer pass binds, so later camera writes cannot change it.
+// Camera snapshot for the occlusion remap and the per-eye scene fixes: Metro's
+// own m_VP and m_P from the last main-scene camera write, and the patched eye
+// m_VP, m_P and views the scene is actually rendered with. Copied to
+// sOccSceneCamera when the G-buffer pass binds, so later camera writes cannot
+// change it mid-frame.
 struct OccCameraSnapshot {
 	float engineVP[16];
 	float engineP[16];
 	float eyeVP[2][16];
 	float eyeView[2][12];
+	float eyeP[2][16];   // patched m_P per eye: P_eye * Correction (legacy view -> eye clip)
 	bool valid;
 };
 static OccCameraSnapshot sOccLastCamera = {};
 static OccCameraSnapshot sOccSceneCamera = {};
 
-static bool sOccProbeR32FBound = false;
-static ID3D11RenderTargetView *sOccProbeRTV = NULL;
-static ID3D11Resource *sOccProbeResource = NULL;   // identity only, not referenced
-static unsigned sOccProbeCopies = 0, sOccProbeReadMaps = 0, sOccProbeClears = 0, sOccProbeDraws = 0;
+// Set while Metro's 160x88-class R32F occlusion downsample target is bound.
+static bool sOccDownsampleBound = false;
 
-static int OccProbeMode()
-{
-	static unsigned checkedFrame = 0xFFFFFFFF;
-	static int fileMode = 0;
-	static bool cycle = false;
-	if (checkedFrame == 0xFFFFFFFF || G->frame_no - checkedFrame >= 120) {
-		checkedFrame = G->frame_no;
-		cycle = StereoSinglePass::FlagFilePresent(L"vr_occ_probe_cycle.txt");
-		fileMode = StereoSinglePass::FlagFilePresent(L"vr_occ_probe_far.txt") ? 1
-			: StereoSinglePass::FlagFilePresent(L"vr_occ_probe_zero.txt") ? 2 : 0;
-	}
-	// vr_occ_probe_cycle.txt: normal -> far -> zero, 10 s (720 frames) each,
-	// so one standing session measures all three without touching files.
-	const int mode = cycle ? (int)((G->frame_no / 720) % 3) : fileMode;
-	VRPerf::gOcclusionProbeMode = (cycle || fileMode) ? mode : -1;
-	static int lastMode = -1;
-	if (mode != lastMode) {
-		lastMode = mode;
-		char note[120];
-		sprintf_s(note, "occlusion probe mode -> %s", mode == 1 ? "FAR (3e38)" : mode == 2 ? "ZERO" : "normal");
-		VRPerf::Note(note);
-	}
-	return mode;
-}
-
-// After a draw into the R32F downsample target: describe it once, and apply
-// the probe overwrite to both eyes' storage.
 static void OccRemapAfterDownsample(ID3D11DeviceContext1 *ctx);
+static void BloomReflectionAfterDraw(ID3D11DeviceContext1 *ctx);
 
-static void OccProbeAfterDraw(ID3D11DeviceContext1 *ctx, UINT64 vsHash, UINT64 psHash)
+// After every hooked Draw/DrawIndexed: put back what the per-draw fixes swapped.
+static void RestoreAfterPatchedDraw(ID3D11DeviceContext1 *ctx)
 {
 	if (!ctx)
 		return;
 	OccRemapAfterDownsample(ctx);
-	if (!sOccProbeR32FBound || !sOccProbeRTV)
-		return;
-	sOccProbeDraws++;
-	static int described = 0;
-	if (described < 2) {
-		described++;
-		char note[700];
-		int used = sprintf_s(note, "occlusion probe: R32F downsample draw frame %u VS %016llX PS %016llX | PS inputs:",
-			G->frame_no, (unsigned long long)vsHash, (unsigned long long)psHash);
-		ID3D11ShaderResourceView *srvs[4] = {};
-		ctx->PSGetShaderResources(0, 4, srvs);
-		for (int i = 0; i < 4 && used > 0; i++) {
-			if (!srvs[i])
-				continue;
-			ID3D11Resource *res = NULL;
-			srvs[i]->GetResource(&res);
-			D3D11_TEXTURE2D_DESC td = {};
-			ID3D11Texture2D *tex = NULL;
-			if (res && SUCCEEDED(res->QueryInterface(__uuidof(ID3D11Texture2D), (void **)&tex))) {
-				tex->GetDesc(&td);
-				tex->Release();
-			}
-			D3D11_SHADER_RESOURCE_VIEW_DESC vd = {};
-			srvs[i]->GetDesc(&vd);
-			used += sprintf_s(note + used, sizeof(note) - used,
-				" t%d %ux%u fmt %d arr %u (view dim %d fmt %d first %u count %u)", i,
-				td.Width, td.Height, (int)td.Format, td.ArraySize, (int)vd.ViewDimension, (int)vd.Format,
-				vd.ViewDimension == D3D11_SRV_DIMENSION_TEXTURE2DARRAY ? vd.Texture2DArray.FirstArraySlice : 0,
-				vd.ViewDimension == D3D11_SRV_DIMENSION_TEXTURE2DARRAY ? vd.Texture2DArray.ArraySize : 0);
-			if (res) res->Release();
-			srvs[i]->Release();
-		}
-		VRPerf::Note(note);
-	}
-	const int mode = OccProbeMode();
-	if (!mode)
-		return;
-	const FLOAT value = mode == 1 ? 3.0e38f : 0.0f;
-	const FLOAT color[4] = { value, value, value, value };
-	ctx->ClearRenderTargetView(sOccProbeRTV, color);
-	if (ID3D11RenderTargetView *twin = StereoTwin::TwinRTV(sOccProbeRTV))
-		ctx->ClearRenderTargetView(twin, color);
-	sOccProbeClears++;
+	BloomReflectionAfterDraw(ctx);
 }
 
 // ---------------------------------------------------------------------------
 // Metro2033ReduxVR: occlusion depth remap.
 //
-// Confirmed by the probe: Metro's CPU occlusion culling reads back the 160x88
-// R32F downsample of the 640x355 scene depth (larger = farther; forcing it far
-// shows everything, forcing it near culls everything). That depth is rendered
-// with each EYE's view and projection, but Metro interprets it with its own
-// camera - a ~50 degree frustum with no head roll or offset - so its test looks
-// at the wrong texels, by an amount that changes with head pitch.
+// Metro's CPU occlusion culling reads back a 160x88 R32F downsample of the
+// 640x355 scene depth (larger = farther). That depth is rendered with each
+// eye's view and projection, but Metro interprets it with its own camera, a
+// much narrower frustum without head roll or offset, so its test samples the
+// wrong texels by an amount that changes with head pitch: objects in view were
+// culled when looking slightly up or level.
 //
-// Before Metro builds the 160x88 buffer, rewrite slice 0 of the 640x355 depth
-// (the slice its downsample reads) so each texel holds the depth Metro's camera
-// would see: cast the engine ray, find where it lands in each eye's depth,
-// rebuild that surface point in world space and project it with Metro's
-// view-projection. Kept conservative - the farther of the two eyes, the
-// farthest texel of a 3x3 neighbourhood, anything outside an eye or within a
-// metre of it (hands, weapon) treated as open space - because an occluder that
-// is too far only costs a little culling, while one that is too near hides
-// things the player can see.
-//
-// vr_occ_remap.txt enables it; vr_occ_remap_cycle.txt alternates off/on every
-// 10 s (shown on the profiler HUD) for side-by-side checks.
+// Before Metro's downsample draw, render into a private depth texture the depth
+// Metro's camera would see: cast the engine ray, find where it lands in each
+// eye's depth, rebuild that surface point in world space and project it with
+// Metro's view-projection. The farther of the two eyes is kept, and anything
+// outside an eye or within a metre of it (hands, weapon) counts as open space,
+// because an occluder that is too far only costs a little culling while one
+// that is too near hides visible objects. The private texture is bound as t0
+// for that one draw only. vr_occ_remap_off.txt beside d3d11.dll disables it.
 namespace {
 	const char *kOccRemapHLSL = R"(
 #pragma pack_matrix(row_major)
@@ -6452,16 +6360,8 @@ float EngineDepthFromEye(int eye, float3 farPoint)
 	float2 uv = float2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
 	if (any(uv < 0.0) || any(uv > 1.0))
 		return FarValue();
-	int2 texel = int2(uv * Source.xy);
-
-	// Source.w: neighbourhood radius (1 = 3x3 conservative, 0 = exact texel).
-	int radius = (int)Source.w;
-	float d = FarValue() > 0.5 ? 0.0 : 1.0;
-	for (int dy = -radius; dy <= radius; dy++)
-	for (int dx = -radius; dx <= radius; dx++) {
-		int2 t = clamp(texel + int2(dx, dy), int2(0, 0), int2(Source.xy) - 1);
-		d = Farther(d, EyeDepth.Load(int4(t, eye, 0)));
-	}
+	int2 texel = clamp(int2(uv * Source.xy), int2(0, 0), int2(Source.xy) - 1);
+	float d = EyeDepth.Load(int4(texel, eye, 0));
 	if (d == FarValue())
 		return FarValue();
 
@@ -6480,9 +6380,6 @@ float EngineDepthFromEye(int eye, float3 farPoint)
 
 float ps_main(float4 pos : SV_Position) : SV_Depth
 {
-	// Source.z: pipeline check - pass the left eye's depth straight through.
-	if (Source.z > 0.5)
-		return EyeDepth.Load(int4(int2(pos.xy), 0, 0));
 	float2 ndc = float2(pos.x / Target.x * 2.0 - 1.0, 1.0 - pos.y / Target.y * 2.0);
 	float farNdc = Target.z > 0.5 ? 0.9999 : 0.0001;
 	float4 p = mul(EngineInvVP, float4(ndc, farNdc, 1.0));
@@ -6508,21 +6405,14 @@ float ps_main(float4 pos : SV_Position) : SV_Depth
 	ID3D11DepthStencilView *sOccRemapOutDSV = NULL;
 	ID3D11ShaderResourceView *sOccRemapOutSRV = NULL;
 	ID3D11ShaderResourceView *sOccRemapDisplaced = NULL; // Metro's t0, put back after its draw
-	unsigned sOccRemapRuns = 0, sOccRemapSkips = 0;
 }
 
 static bool OccRemapEnabled()
 {
-	static unsigned checkedFrame = 0xFFFFFFFF;
-	static bool on = false, cycle = false;
-	if (checkedFrame == 0xFFFFFFFF || G->frame_no - checkedFrame >= 120) {
-		checkedFrame = G->frame_no;
-		on = StereoSinglePass::FlagFilePresent(L"vr_occ_remap.txt");
-		cycle = StereoSinglePass::FlagFilePresent(L"vr_occ_remap_cycle.txt");
-	}
-	const bool enabled = cycle ? ((G->frame_no / 720) % 2) == 1 : on;
-	VRPerf::gOcclusionRemapState = (cycle || on) ? (enabled ? 1 : 0) : -1;
-	return enabled;
+	static int enabled = -1;
+	if (enabled < 0)
+		enabled = StereoSinglePass::FlagFilePresent(L"vr_occ_remap_off.txt") ? 0 : 1;
+	return enabled != 0;
 }
 
 static void MakeViewInverseOrigin(const float view3x4[12], float out[4])
@@ -6579,183 +6469,27 @@ static bool OccRemapInit(ID3D11Device1 *device)
 		hr = device->CreateRasterizerState(&rd, &sOccRemapRS);
 	}
 	if (FAILED(hr)) {
-		VRPerf::Note("occlusion remap: shader or state creation FAILED - remap disabled");
+		LogInfo("occlusion remap: shader or state creation failed, remap disabled\n");
 		return false;
 	}
 	sOccRemapInitFailed = false;
 	return true;
 }
 
-// Diagnostic, every 6 s while remapping: read the eye depth and the previous
-// remap output back, run the same remap on the CPU, and log where values go.
-static void OccMul(const float m[16], const float v[4], float out[4])
-{
-	for (int r = 0; r < 4; r++)
-		out[r] = m[r * 4] * v[0] + m[r * 4 + 1] * v[1] + m[r * 4 + 2] * v[2] + m[r * 4 + 3] * v[3];
-}
-
-static void OccRemapDiagnose(ID3D11Device1 *device, ID3D11DeviceContext1 *ctx,
-	ID3D11Resource *inputRes, const D3D11_TEXTURE2D_DESC &td, const OccRemapConstants &k)
-{
-	// Blocking readback: a visible hitch every 6 s, so only on request.
-	static unsigned lastFrame = 0;
-	if (G->frame_no - lastFrame < 432)
-		return;
-	lastFrame = G->frame_no;
-	if (!StereoSinglePass::FlagFilePresent(L"vr_occ_remap_diag.txt"))
-		return;
-
-	static ID3D11Texture2D *inStage = NULL, *outStage = NULL;
-	static UINT stageW = 0, stageH = 0;
-	if (stageW != td.Width || stageH != td.Height) {
-		if (inStage) { inStage->Release(); inStage = NULL; }
-		if (outStage) { outStage->Release(); outStage = NULL; }
-		D3D11_TEXTURE2D_DESC sd = td;
-		sd.Format = DXGI_FORMAT_R32_TYPELESS;
-		sd.Usage = D3D11_USAGE_STAGING;
-		sd.BindFlags = 0;
-		sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-		sd.MiscFlags = 0;
-		device->CreateTexture2D(&sd, NULL, &inStage);
-		sd.ArraySize = 1;
-		device->CreateTexture2D(&sd, NULL, &outStage);
-		stageW = td.Width;
-		stageH = td.Height;
-	}
-	if (!inStage || !outStage || !sOccRemapOut)
-		return;
-	ctx->CopyResource(inStage, inputRes);
-	ctx->CopyResource(outStage, sOccRemapOut);   // last frame's remap output
-	D3D11_MAPPED_SUBRESOURCE in0, in1, out0;
-	if (FAILED(ctx->Map(inStage, 0, D3D11_MAP_READ, 0, &in0)))
-		return;
-	if (FAILED(ctx->Map(inStage, 1, D3D11_MAP_READ, 0, &in1))) {
-		ctx->Unmap(inStage, 0);
-		return;
-	}
-	if (FAILED(ctx->Map(outStage, 0, D3D11_MAP_READ, 0, &out0))) {
-		ctx->Unmap(inStage, 1);
-		ctx->Unmap(inStage, 0);
-		return;
-	}
-	const int W = (int)td.Width, H = (int)td.Height;
-	const bool farIsGreater = k.target[2] > 0.5f;
-	const float farValue = farIsGreater ? 1.0f : 0.0f;
-	auto at = [W](const D3D11_MAPPED_SUBRESOURCE &m, int x, int y) {
-		return ((const float *)m.pData + y * (m.RowPitch / 4))[x];
-	};
-	auto farther = [farIsGreater](float a, float b) { return farIsGreater ? max(a, b) : min(a, b); };
-
-	// Remap one texel on the CPU exactly like the shader; optionally trace it.
-	auto remap = [&](int x, int y, char *trace, size_t traceSize) -> float {
-		const float ndc[4] = { (x + 0.5f) / W * 2.0f - 1.0f, 1.0f - (y + 0.5f) / H * 2.0f,
-			farIsGreater ? 0.9999f : 0.0001f, 1.0f };
-		float p[4];
-		OccMul(k.engineInvVP, ndc, p);
-		const float farPoint[4] = { p[0] / p[3], p[1] / p[3], p[2] / p[3], 1.0f };
-		float result = farIsGreater ? 0.0f : 1.0f;
-		int used = trace ? sprintf_s(trace, traceSize, "texel (%d,%d) farPoint (%.1f %.1f %.1f)", x, y,
-			farPoint[0], farPoint[1], farPoint[2]) : 0;
-		for (int eye = 0; eye < 2; eye++) {
-			const float *vp = eye ? k.eyeVP1 : k.eyeVP0;
-			const float *ivp = eye ? k.eyeInvVP1 : k.eyeInvVP0;
-			const float *pos = eye ? k.eyePos1 : k.eyePos0;
-			const D3D11_MAPPED_SUBRESOURCE &src = eye ? in1 : in0;
-			float value = farValue;
-			float clip[4];
-			OccMul(vp, farPoint, clip);
-			const char *why = "ok";
-			if (clip[3] <= 1e-4f) {
-				why = "behind eye";
-			} else {
-				const float ex = clip[0] / clip[3], ey = clip[1] / clip[3];
-				const float u = ex * 0.5f + 0.5f, v = 0.5f - ey * 0.5f;
-				if (u < 0 || u > 1 || v < 0 || v > 1) {
-					why = "outside eye";
-				} else {
-					const int tx = min(W - 1, (int)(u * W)), ty = min(H - 1, (int)(v * H));
-					float d = farIsGreater ? 0.0f : 1.0f;
-					for (int dy = -1; dy <= 1; dy++)
-						for (int dx = -1; dx <= 1; dx++)
-							d = farther(d, at(src, max(0, min(W - 1, tx + dx)), max(0, min(H - 1, ty + dy))));
-					if (d == farValue) {
-						why = "eye depth far";
-					} else {
-						const float e[4] = { ex, ey, d, 1.0f };
-						float w[4];
-						OccMul(ivp, e, w);
-						const float wp[4] = { w[0] / w[3], w[1] / w[3], w[2] / w[3], 1.0f };
-						const float dist = sqrtf((wp[0] - pos[0]) * (wp[0] - pos[0])
-							+ (wp[1] - pos[1]) * (wp[1] - pos[1]) + (wp[2] - pos[2]) * (wp[2] - pos[2]));
-						float ec[4];
-						OccMul(k.engineVP, wp, ec);
-						if (dist < k.target[3]) {
-							why = "near gate";
-						} else if (ec[3] <= 1e-4f) {
-							why = "behind engine";
-						} else {
-							value = max(0.0f, min(1.0f, ec[2] / ec[3]));
-						}
-						if (trace && used > 0)
-							used += sprintf_s(trace + used, traceSize - used,
-								" | eye%d uv (%.3f %.3f) d %.5f world (%.1f %.1f %.1f) dist %.2f engine z %.5f",
-								eye, u, v, d, wp[0], wp[1], wp[2], dist, ec[3] > 0 ? ec[2] / ec[3] : -1.0f);
-					}
-				}
-			}
-			if (trace && used > 0 && strcmp(why, "ok") != 0)
-				used += sprintf_s(trace + used, traceSize - used, " | eye%d %s", eye, why);
-			result = farther(result, value);
-		}
-		return result;
-	};
-
-	unsigned inFar = 0, cpuFar = 0, gpuFar = 0, total = 0;
-	double inSum = 0, cpuSum = 0, gpuSum = 0;
-	for (int y = 0; y < H; y += 4) {
-		for (int x = 0; x < W; x += 4) {
-			const float a = at(in0, x, y), c = remap(x, y, NULL, 0), g = at(out0, x, y);
-			inFar += a == farValue; cpuFar += c == farValue; gpuFar += g == farValue;
-			inSum += a; cpuSum += c; gpuSum += g;
-			total++;
-		}
-	}
-	char note[400];
-	sprintf_s(note, "occlusion remap check frame %u: far fraction eye0 input %.0f%% | CPU remap %.0f%% | GPU output (prev frame) %.0f%% | "
-		"means %.5f / %.5f / %.5f | farIsGreater %d identity %d engineP P10 %.4f P11 %.4f",
-		G->frame_no, 100.0 * inFar / total, 100.0 * cpuFar / total, 100.0 * gpuFar / total,
-		inSum / total, cpuSum / total, gpuSum / total, farIsGreater ? 1 : 0, k.source[2] > 0.5f ? 1 : 0,
-		sOccSceneCamera.engineP[10], sOccSceneCamera.engineP[11]);
-	VRPerf::Note(note);
-	const int probes[3][2] = { { W / 2, H / 2 }, { W / 2, H / 4 }, { W / 2, H * 3 / 4 } };
-	for (const auto &pr : probes) {
-		char trace[700];
-		remap(pr[0], pr[1], trace, sizeof(trace));
-		VRPerf::Note(trace);
-	}
-	ctx->Unmap(outStage, 0);
-	ctx->Unmap(inStage, 1);
-	ctx->Unmap(inStage, 0);
-}
-
 // Called right before Metro's draw into the R32F downsample target.
 static void OccRemapBeforeDownsample(ID3D11Device1 *device, ID3D11DeviceContext1 *ctx)
 {
-	if (!sOccProbeR32FBound || !OccRemapEnabled())
+	if (!sOccDownsampleBound || !OccRemapEnabled())
 		return;
 	const OccCameraSnapshot cam = sOccSceneCamera;
-	if (!cam.valid || !OccRemapInit(device)) {
-		sOccRemapSkips++;
+	if (!cam.valid || !OccRemapInit(device))
 		return;
-	}
 
 	// The input Metro samples: slot 0, a 2-slice depth array.
 	ID3D11ShaderResourceView *inputSRV = NULL;
 	ctx->PSGetShaderResources(0, 1, &inputSRV);
-	if (!inputSRV) {
-		sOccRemapSkips++;
+	if (!inputSRV)
 		return;
-	}
 	ID3D11Resource *inputRes = NULL;
 	inputSRV->GetResource(&inputRes);
 	inputSRV->Release();
@@ -6770,14 +6504,11 @@ static void OccRemapBeforeDownsample(ID3D11Device1 *device, ID3D11DeviceContext1
 		&& (td.Format == DXGI_FORMAT_R32_TYPELESS || td.Format == DXGI_FORMAT_D32_FLOAT);
 	if (!usable) {
 		if (inputRes) inputRes->Release();
-		sOccRemapSkips++;
 		static bool noted = false;
 		if (!noted) {
 			noted = true;
-			char note[160];
-			sprintf_s(note, "occlusion remap: unexpected input %ux%u fmt %d arr %u - skipped",
+			LogInfo("occlusion remap: unexpected input %ux%u fmt %d arr %u, skipped\n",
 				td.Width, td.Height, (int)td.Format, td.ArraySize);
-			VRPerf::Note(note);
 		}
 		return;
 	}
@@ -6817,12 +6548,11 @@ static void OccRemapBeforeDownsample(ID3D11Device1 *device, ID3D11DeviceContext1
 			&& SUCCEEDED(device->CreateShaderResourceView(sOccRemapOut, &outDesc, &sOccRemapOutSRV))) {
 			sOccRemapSource = inputRes;
 		} else {
-			VRPerf::Note("occlusion remap: could not create its depth views - skipped");
+			LogInfo("occlusion remap: could not create its depth views, skipped\n");
 		}
 	}
 	if (inputRes != sOccRemapSource) {
 		inputRes->Release();
-		sOccRemapSkips++;
 		return;
 	}
 
@@ -6834,7 +6564,6 @@ static void OccRemapBeforeDownsample(ID3D11Device1 *device, ID3D11DeviceContext1
 	if (!VRPose::Invert4x4(k.engineVP, k.engineInvVP) || !VRPose::Invert4x4(k.eyeVP0, k.eyeInvVP0)
 		|| !VRPose::Invert4x4(k.eyeVP1, k.eyeInvVP1)) {
 		inputRes->Release();
-		sOccRemapSkips++;
 		return;
 	}
 	// Depth direction from Metro's projection: NDC z at 1 m vs 100 m.
@@ -6849,26 +6578,9 @@ static void OccRemapBeforeDownsample(ID3D11Device1 *device, ID3D11DeviceContext1
 	MakeViewInverseOrigin(cam.eyeView[1], k.eyePos1);
 	k.source[0] = (float)td.Width;
 	k.source[1] = (float)td.Height;
-	k.source[2] = StereoSinglePass::FlagFilePresent(L"vr_occ_remap_identity.txt") ? 1.0f : 0.0f;
-	// vr_occ_remap_tight_cycle.txt: conservative (3x3) and exact (1 texel)
-	// alternate every 10 s; vr_occ_remap_tight.txt: always exact.
-	{
-		static unsigned checked = 0xFFFFFFFF;
-		static bool tight = false, tightCycle = false;
-		if (checked == 0xFFFFFFFF || G->frame_no - checked >= 120) {
-			checked = G->frame_no;
-			tight = StereoSinglePass::FlagFilePresent(L"vr_occ_remap_tight.txt");
-			tightCycle = StereoSinglePass::FlagFilePresent(L"vr_occ_remap_tight_cycle.txt");
-		}
-		const bool exact = tightCycle ? ((G->frame_no / 720) % 2) == 1 : tight;
-		k.source[3] = exact ? 0.0f : 1.0f;
-		VRPerf::gOcclusionRemapState = exact ? 2 : 1;
-	}
-	OccRemapDiagnose(device, ctx, inputRes, td, k);
 	D3D11_MAPPED_SUBRESOURCE m;
 	if (FAILED(ctx->Map(sOccRemapCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
 		inputRes->Release();
-		sOccRemapSkips++;
 		return;
 	}
 	memcpy(m.pData, &k, sizeof(k));
@@ -6938,7 +6650,6 @@ static void OccRemapBeforeDownsample(ID3D11Device1 *device, ID3D11DeviceContext1
 	if (oldIL) oldIL->Release(); if (oldRS) oldRS->Release();
 	if (oldDSS) oldDSS->Release(); if (oldBlend) oldBlend->Release();
 	inputRes->Release();
-	sOccRemapRuns++;
 }
 
 static void OccRemapAfterDownsample(ID3D11DeviceContext1 *ctx)
@@ -6950,60 +6661,6 @@ static void OccRemapAfterDownsample(ID3D11DeviceContext1 *ctx)
 	sOccRemapDisplaced = NULL;
 }
 
-static unsigned long long OccProbeGameOffset(void *returnAddress)
-{
-	const unsigned long long base = (unsigned long long)(uintptr_t)GetModuleHandleW(NULL);
-	const unsigned long long ra = (unsigned long long)(uintptr_t)returnAddress;
-	return ra >= base ? ra - base : ra;
-}
-
-static void OccProbeDescribeTexture(ID3D11Resource *res, char *out, size_t outSize)
-{
-	D3D11_TEXTURE2D_DESC td = {};
-	ID3D11Texture2D *tex = NULL;
-	if (res && SUCCEEDED(res->QueryInterface(__uuidof(ID3D11Texture2D), (void **)&tex))) {
-		tex->GetDesc(&td);
-		tex->Release();
-	}
-	sprintf_s(out, outSize, "%ux%u fmt %d arr %u usage %d cpu 0x%x", td.Width, td.Height,
-		(int)td.Format, td.ArraySize, (int)td.Usage, td.CPUAccessFlags);
-}
-
-static void OccProbeNoteCopy(ID3D11Resource *dst, const char *how, void *returnAddress)
-{
-	sOccProbeCopies++;
-	static int logged = 0;
-	if (logged >= 3)
-		return;
-	logged++;
-	char desc[120], note[300];
-	OccProbeDescribeTexture(dst, desc, sizeof(desc));
-	sprintf_s(note, "occlusion probe: %s from the R32F downsample at frame %u into %s, called from metro.exe+0x%llX",
-		how, G->frame_no, desc, OccProbeGameOffset(returnAddress));
-	VRPerf::Note(note);
-}
-
-static void OccProbeNoteReadMap(ID3D11Resource *res, UINT flags, HRESULT hr, void *returnAddress)
-{
-	D3D11_RESOURCE_DIMENSION dim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
-	res->GetType(&dim);
-	if (dim != D3D11_RESOURCE_DIMENSION_TEXTURE2D)
-		return;
-	D3D11_TEXTURE2D_DESC td = {};
-	((ID3D11Texture2D *)res)->GetDesc(&td);
-	if (td.Format != DXGI_FORMAT_R32_FLOAT || td.Width > 400)
-		return;
-	sOccProbeReadMaps++;
-	static int logged = 0;
-	if (logged >= 3)
-		return;
-	logged++;
-	char desc[120], note[320];
-	OccProbeDescribeTexture(res, desc, sizeof(desc));
-	sprintf_s(note, "occlusion probe: Map(READ) of %s at frame %u flags 0x%x hr 0x%08lx tid %lu from metro.exe+0x%llX",
-		desc, G->frame_no, flags, (unsigned long)hr, GetCurrentThreadId(), OccProbeGameOffset(returnAddress));
-	VRPerf::Note(note);
-}
 static bool sArmHighResolutionOverlays = false;
 static bool IsLateLaserDotProjectorDraw(ID3D11VertexShader *vs,
 	ID3D11PixelShader *ps, UINT indexCount)
@@ -7129,15 +6786,12 @@ void HackerContext::EndLensFlareDepthOcclusion()
 	mLensFlareSavedDepthState = NULL;
 }
 
-// The chapter-select preview quad over the television (capture 031034, frame
-// 2479: one flat six-index draw, not classified as universal UI).
+// VS of the chapter-select preview quad drawn over the menu television.
 static const UINT64 kChapterPreviewVS = 0x1443E4A0E9F03AD4ull;
 
-// UI-layer fallback: Metro's final composite as a draw into the real back
-// buffer that samples a texture the size of the scene canvas. Probed only on
-// UI-layer screens before the layer is armed, at most four draws a frame; each
-// distinct shader pair is noted once, so a capture shows what the composite
-// really is in this configuration.
+// Fallback composite detection on UI-layer screens: a back-buffer draw sampling
+// a scene-canvas-sized t0, probed at most four draws a frame before the layer
+// is armed.
 static bool IsUILayerCompositeBySource(ID3D11DeviceContext *context, UINT64 vsHash, UINT64 psHash)
 {
 	if (sHighResolutionOverlayTargetBound || sCurrentRTWidth != 2560 || sCurrentRTHeight != 1440 ||
@@ -7680,15 +7334,11 @@ void HackerContext::BeforeDraw(DrawContext &data)
 		DrawVRReticle();
 		data.call_info.skip = true;
 	}
-	// Main menu: the chapter-select preview image is a single flat quad Metro
-	// lays over the 3D television. On the view-locked HUD plane each eye sees
-	// it at a different place against the TV, so it doubles - and the same
-	// chapter is already shown on the TV itself. Do not draw that quad. Text
-	// (many quads per draw) and world-placed labels are untouched.
-	// Also while the UI layer is capturing: its head-locked quad cannot line up
-	// with the television either, and would cover the TV and its labels.
-	// One classification for the whole late-2D block below. This test used to
-	// be asked three times per draw, and it is the most expensive one here.
+	// Main menu: skip the flat preview quad over the 3D television; on the
+	// view-locked HUD plane (or the UI layer) it cannot line up with the TV in
+	// either eye, and the TV already shows the chapter. Text and world-placed
+	// labels are untouched.
+	// One classification, reused by the late-2D block below.
 	const bool universalUIDraw = IsUniversalUIDraw(mCurrentVertexShaderHandle,
 		mCurrentPixelShaderHandle, mOrigContext1, data.call_info.IndexCount);
 	if (!data.call_info.skip && !isReticleDraw && !isLeftWatchSurface
@@ -7706,13 +7356,9 @@ void HackerContext::BeforeDraw(DrawContext &data)
 	// an alpha-correct blend variant (undone in AfterDraw).
 	const UINT uiRouteCount = data.call_info.IndexCount
 		? data.call_info.IndexCount : data.call_info.VertexCount;
-	// The chapter-select preview is the same case as the main menu's one screen
-	// deeper: a single flat quad Metro lays over the 3D television. It is drawn
-	// by its own shader rather than the universal UI one, so the count==6 rule
-	// above never sees it, and in the flat layer it becomes a SECOND copy of the
-	// picture the television already shows, at a different place - which is what
-	// reads as doubling. The press-any-key prompt is also a flat six-index quad,
-	// but with a different vertex shader, so it is untouched.
+	// Chapter select: the preview quad uses its own shader (kChapterPreviewVS), not
+	// the universal UI one, so it is hidden here for the same reason. The
+	// press-any-key prompt is a flat quad with a different VS and is untouched.
 	if (!data.call_info.skip && !isReticleDraw && !isLeftWatchSurface &&
 		sUILastValid && sUILastFlat && uiRouteCount == 6 &&
 		mCurrentVertexShader == kChapterPreviewVS &&
@@ -8645,20 +8291,10 @@ void HackerContext::PatchBonePaletteForBothEyes(ID3D11Buffer *buf, void *data, U
 		pt.twin = NULL;
 		pt.bytes = bytes;
 		pt.phase = 0;
-		// A buffer that is not recognisably a view-space palette is re-tested
-		// at most about once a second instead of on every Unmap of it - except
-		// palette-sized ones (IsBonePaletteBuffer's range): Metro rewrites those
-		// for one character after another, and a later write in the same frame
-		// may pass where the first failed, so they are re-tested every time.
-		//
-		// That per-write retest is the full 12-alignment structural search, and
-		// it scales with the characters on screen. Every profile so far shows
-		// zero palette twins bound, i.e. it has never once passed - so outside
-		// vr_unmap_legacy.txt a palette-sized buffer is retested at most every
-		// 8 frames too, still often enough to register one that starts to pass.
+		// Throttle phase detection after a miss: palette-sized buffers are retried
+		// every 8 frames, others every 60.
 		const bool paletteSized = bytes >= 3856 && bytes <= 4096;
-		const bool legacy = StereoSinglePass::UnmapLegacyEnabled();
-		const unsigned retestFrames = paletteSized ? (legacy ? 0u : 8u) : 60u;
+		const unsigned retestFrames = paletteSized ? 8u : 60u;
 		static std::unordered_map<ID3D11Buffer *, unsigned> sPalettePhaseMisses;
 		auto miss = retestFrames ? sPalettePhaseMisses.find(buf) : sPalettePhaseMisses.end();
 		if (miss != sPalettePhaseMisses.end() && G->frame_no - miss->second < retestFrames)
@@ -8743,10 +8379,7 @@ static ID3D11Buffer *PaletteTwinOf(ID3D11Buffer *buf)
 	return (it != sPalettes.end() && it->second.phaseKnown) ? it->second.twin : NULL;
 }
 
-// The same answer, resolved at most once a frame per slot and bound buffer.
-// Begin/EndTwinPass asked it for every constant-buffer slot on every doubled
-// draw - about 24 hash lookups a draw, ~33000 a frame. A palette registered
-// later in the same frame is picked up on the next one.
+// PaletteTwinOf memoised per slot and buffer for the current frame.
 static ID3D11Buffer *CachedPaletteTwin(UINT slot, ID3D11Buffer *buf)
 {
 	const UINT kSlots = 16;
@@ -9041,11 +8674,9 @@ static const UINT kTrackedCBSlots = 14;
 static ID3D11Buffer *sBoundVSCB[kTrackedCBSlots] = { NULL };
 
 static ID3D11Buffer *sBoundPSCB[kTrackedCBSlots] = { NULL };
-// The same tracking for the stages after the vertex shader. With tessellation
-// on, the position the rasterizer sees comes from the DOMAIN shader, so a
-// right-eye constant buffer bound only to the vertex stage never reaches the
-// picture - which is why the earlier attempt at this looked like it had no
-// effect at all and was abandoned for the in-place rewrite.
+// HS/DS/GS constant-buffer bindings, so a private eye-1 buffer can be bound to
+// every stage that reads the game's buffer (with tessellation the domain
+// shader produces the position).
 static ID3D11Buffer *sBoundHSCB[kTrackedCBSlots] = { NULL };
 static ID3D11Buffer *sBoundDSCB[kTrackedCBSlots] = { NULL };
 static ID3D11Buffer *sBoundGSCB[kTrackedCBSlots] = { NULL };
@@ -9059,18 +8690,9 @@ static void TrackStageConstantBuffers(ID3D11Buffer **slots, UINT StartSlot,
 			slots[s] = ppConstantBuffers ? ppConstantBuffers[s - StartSlot] : NULL;
 }
 
-// Give the second eye its own constant buffer instead of rewriting the game's
-// with Map(WRITE_DISCARD) twice per doubled draw.
-//
-// MEASURED AND REJECTED (capture 032959 against 024431, same kind of scene):
-// constant-buffer time 6.39 -> 6.36 ms/frame over 7745 -> 7154 calls. No gain.
-// The rewrite is two calls (Map + Unmap) per slot, and the bind is one upload
-// plus up to four stage binds and four restores, so the call count barely
-// moves - the cost is the number of hooked calls, not the map itself. Left in
-// place because the stage tracking it needs is correct and is wanted anyway,
-// but switched off: the in-place rewrite is the path every shipped build used,
-// and it cannot lose an untracked read of the buffer. The real fix for this
-// cost is single-pass folding, which removes the second draw outright.
+// Bind a private eye-1 constant buffer instead of rewriting the game's in
+// place. Disabled: no measurable gain over the in-place rewrite, which also
+// cannot miss an untracked read of the buffer.
 static const bool kBindEye1CB = false;
 enum {
 	kStageVS = 1,
@@ -9444,10 +9066,8 @@ static ID3D11Buffer *sClipMappedBuffer = NULL;
 static void *sClipMappedData = NULL;
 static UINT sClipMappedBytes = 0;
 
-// Buffers Metro has actually bound at VS slot b4, the clip-plane slot. Only
-// those are snapshotted at Unmap: before this filter every small constant
-// buffer written with DISCARD paid a 4 KB copy plus tail memsets, thousands of
-// times a frame, while only b4's bytes are ever read back.
+// Buffers ever bound at VS b4 (the clip-plane slot); only these are
+// snapshotted at Unmap.
 static std::unordered_set<ID3D11Buffer *> sClipCandidates;
 
 static bool IsClipCandidateBuffer(ID3D11Buffer *buf)
@@ -9502,6 +9122,154 @@ static std::unordered_map<ID3D11Buffer *, LaserLightCBSnapshot> sPS12Snapshots;
 static ID3D11Buffer *sMappedPS12Buffer = NULL;
 static void *sMappedPS12Data = NULL;
 static UINT sMappedPS12Bytes = 0;
+
+// The same CPU snapshots for buffers bound at PS b3 (cb_misc_0, which carries
+// m_screen), for the bloom-reflection fix below.
+static std::unordered_set<ID3D11Buffer *> sObservedPS3Buffers;
+static std::unordered_map<ID3D11Buffer *, LaserLightCBSnapshot> sPS3Snapshots;
+static ID3D11Buffer *sMappedPS3Buffer = NULL;
+static void *sMappedPS3Data = NULL;
+static UINT sMappedPS3Bytes = 0;
+
+// Metro2033ReduxVR: floor "reflections" in the deferred combine pass.
+//
+// PS FC515E26794E9B8B / BF5A6A45A37F1775 fake glossy reflections: reflect the
+// (legacy, desktop-view-space) view ray about the G-buffer normal, project that
+// direction to a screen UV with cb_misc_0.m_screen and sample the blurred bloom
+// buffer there. m_screen is built by Metro from ITS projection, but the bloom
+// buffer is rendered per eye with the headset projection - so the sampled
+// point is wrong, differently in each eye: a bright picture that slides with
+// the head and doubles.
+//
+// Fix: give these draws a private cb_misc_0 whose m_screen is rebuilt from each
+// eye's own clip transform. The shader only uses m_screen rows 0..2 through
+// dp3, dividing by row 2. Metro's m_screen is K * R, with K = [kx 0 cx; 0 ky cy;
+// 0 0 1] its fixed desktop projection (not derived from the world FOV) and R a
+// rotation (the identity in gameplay). The eye version is rows {0, 1, 3} of the
+// eye's patched m_P (P_eye * Correction: legacy view -> eye clip) times R.
+namespace {
+	ID3D11Buffer *sBloomReflCB = NULL;
+	UINT sBloomReflCBBytes = 0;
+	bool sBloomReflSwapped = false;
+	unsigned char sBloomReflEye1[4096];
+	UINT sBloomReflBytes = 0;
+}
+
+// On by default; vr_fix_bloom_reflection_off.txt beside d3d11.dll (read once)
+// leaves Metro's own m_screen in place.
+static bool BloomReflectionFixEnabled()
+{
+	static int enabled = -1;
+	if (enabled < 0)
+		enabled = StereoSinglePass::FlagFilePresent(L"vr_fix_bloom_reflection_off.txt") ? 0 : 1;
+	return enabled != 0;
+}
+
+static bool BloomReflectionWrite(ID3D11DeviceContext1 *ctx, const unsigned char *bytes, UINT size)
+{
+	D3D11_MAPPED_SUBRESOURCE m;
+	if (FAILED(ctx->Map(sBloomReflCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &m)))
+		return false;
+	memcpy(m.pData, bytes, size);
+	ctx->Unmap(sBloomReflCB, 0);
+	return true;
+}
+
+// Before the live (left-eye) draw of a combine pass.
+static void BloomReflectionBeforeDraw(ID3D11Device1 *device, ID3D11DeviceContext1 *ctx, UINT64 psHash,
+	const float eyeP[2][16], bool cameraValid)
+{
+	sBloomReflSwapped = false;
+	if (psHash != 0xFC515E26794E9B8Bull && psHash != 0xBF5A6A45A37F1775ull)
+		return;
+	if (!BloomReflectionFixEnabled() || !cameraValid || !device)
+		return;
+	ID3D11Buffer *game = sBoundPSCB[3];
+	auto it = game ? sPS3Snapshots.find(game) : sPS3Snapshots.end();
+	if (it == sPS3Snapshots.end() || !it->second.valid || it->second.bytes < 208)
+		return;
+	const LaserLightCBSnapshot &snap = it->second;
+
+	const float *screen = (const float *)snap.data + 36;   // m_screen at byte offset 144
+
+	// Split Metro's rows into K * R: row 2 is the rotated view axis (w), rows
+	// 0/1 are kx*r0 + cx*r2 and ky*r1 + cy*r2.
+	float R[9];
+	{
+		const float *s = screen;
+		const float w = sqrt(s[8] * s[8] + s[9] * s[9] + s[10] * s[10]);
+		if (!(w > 1e-4f))
+			return;
+		const float r2[3] = { s[8] / w, s[9] / w, s[10] / w };
+		const float cx = s[0] * r2[0] + s[1] * r2[1] + s[2] * r2[2];
+		const float cy = s[4] * r2[0] + s[5] * r2[1] + s[6] * r2[2];
+		const float a0[3] = { s[0] - cx * r2[0], s[1] - cx * r2[1], s[2] - cx * r2[2] };
+		const float a1[3] = { s[4] - cy * r2[0], s[5] - cy * r2[1], s[6] - cy * r2[2] };
+		const float kx = sqrt(a0[0] * a0[0] + a0[1] * a0[1] + a0[2] * a0[2]);
+		const float ky = sqrt(a1[0] * a1[0] + a1[1] * a1[1] + a1[2] * a1[2]);
+		if (!(kx > 1e-4f) || !(ky > 1e-4f))
+			return;
+		for (int c = 0; c < 3; c++) {
+			R[c] = a0[c] / kx;
+			R[3 + c] = a1[c] / ky;
+			R[6 + c] = r2[c];
+		}
+	}
+	float eye0[16], eye1[16];
+	for (int e = 0; e < 2; e++) {
+		const float *p = eyeP[e];
+		float *out = e == 0 ? eye0 : eye1;
+		// Eye rows x, y and w (row-major m_P: row 3 is the perspective row).
+		const float *rows[3] = { p, p + 4, p + 12 };
+		for (int r = 0; r < 3; r++) {
+			for (int c = 0; c < 3; c++)
+				out[r * 4 + c] = rows[r][0] * R[c] + rows[r][1] * R[3 + c] + rows[r][2] * R[6 + c];
+			out[r * 4 + 3] = 0.0f;
+		}
+		for (int c = 0; c < 4; c++)
+			out[12 + c] = screen[12 + c];
+	}
+	for (int i = 0; i < 16; i++)
+		if (!isfinite(eye0[i]) || !isfinite(eye1[i]))
+			return;
+
+	if (!sBloomReflCB || sBloomReflCBBytes != snap.bytes) {
+		if (sBloomReflCB) { sBloomReflCB->Release(); sBloomReflCB = NULL; }
+		D3D11_BUFFER_DESC bd = {};
+		bd.ByteWidth = snap.bytes;
+		bd.Usage = D3D11_USAGE_DYNAMIC;
+		bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+		bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+		if (FAILED(device->CreateBuffer(&bd, NULL, &sBloomReflCB)))
+			return;
+		sBloomReflCBBytes = snap.bytes;
+	}
+	unsigned char bytes[4096];
+	memcpy(bytes, snap.data, snap.bytes);
+	memcpy(bytes + 144, eye0, sizeof(eye0));
+	memcpy(sBloomReflEye1, snap.data, snap.bytes);
+	memcpy(sBloomReflEye1 + 144, eye1, sizeof(eye1));
+	sBloomReflBytes = snap.bytes;
+	if (!BloomReflectionWrite(ctx, bytes, snap.bytes))
+		return;
+	ctx->PSSetConstantBuffers(3, 1, &sBloomReflCB);
+	sBloomReflSwapped = true;
+}
+
+// Inside the twin pass, before the right-eye draw.
+static void BloomReflectionTwin(ID3D11DeviceContext1 *ctx)
+{
+	if (sBloomReflSwapped && sBloomReflCB)
+		BloomReflectionWrite(ctx, sBloomReflEye1, sBloomReflBytes);
+}
+
+static void BloomReflectionAfterDraw(ID3D11DeviceContext1 *ctx)
+{
+	if (!sBloomReflSwapped)
+		return;
+	sBloomReflSwapped = false;
+	ctx->PSSetConstantBuffers(3, 1, &sBoundPSCB[3]);
+}
 
 static void RegisterDeferredLightCB()
 {
@@ -11718,15 +11486,13 @@ static void CensusNoteMap(ID3D11Resource *pResource, D3D11_MAP MapType);
 static LONGLONG TicksNow();
 
 // Metro2033ReduxVR: CPU shadows for dynamic vertex buffers the mod reads on
-// the CPU every frame - Metro's per-instance ring, which carries the
-// viewmodel's native instance matrix used by the hand, watch, charger and
-// lighter placement. Reading those bytes with a staging copy + Map(READ)
-// drains the whole GPU queue and serialises CPU and GPU for the rest of the
-// frame (measured ~2 ms/frame of pure stall, plus the lost overlap).
+// the CPU every frame (Metro's per-instance ring: the viewmodel's native
+// instance matrix used by the hand, watch, charger and lighter placement).
+// Reading them with a staging copy + Map(READ) would stall the GPU queue.
 //
-// Instead, once such a buffer is registered, Map hands Metro a write-watched
+// Once such a buffer is registered, Map hands Metro a write-watched
 // system-memory shadow and Unmap copies only the pages Metro touched into the
-// driver's memory. The bytes the next draw uses are then on the CPU already.
+// driver's memory, so the bytes the next draw uses are already on the CPU.
 // Only a WRITE_DISCARD map starts shadowing, so every live byte the GPU can
 // reference afterwards has passed through the shadow.
 namespace {
@@ -11789,6 +11555,12 @@ static void RegisterDynamicShadow(ID3D11Buffer *buffer)
 			VRPerf::Note(note);
 		}
 	}
+	// Only real shadows are kept (and AddRef'd). Remembering "not shadowable"
+	// by raw pointer let a freed buffer's address block a later dynamic VB
+	// allocated at the same address, and filled the 256-entry table with every
+	// index/constant buffer that ever went through a readback.
+	if (!shadow.mem)
+		return;
 	sDynamicShadows[buffer] = shadow;
 }
 
@@ -11827,14 +11599,10 @@ STDMETHODIMP HackerContext::Map(THIS_
 	VRPERF_HOOK(kHookConstants);
 	HRESULT hr;
 
-	// Time the passthrough separately from everything we add around it: three
-	// rounds of cutting this hook's body moved the measured cost by 0.01 us,
-	// which says the cost is either the driver or something not in the body.
+	// Driver time and hook body time (no-ops unless kHookSplitTimingEnabled).
 	const LONGLONG mapEnter = TicksNow();
 	hr = mOrigContext1->Map(pResource, Subresource, MapType, MapFlags, pMappedResource);
 	const LONGLONG mapDriverDone = TicksNow();
-	if (MapType == D3D11_MAP_READ && pResource)
-		OccProbeNoteReadMap(pResource, MapFlags, hr, _ReturnAddress());
 	StereoTwin::gMapDriverTicks += mapDriverDone - mapEnter;
 	StereoTwin::gMapDriverCalls++;
 	struct MapBodyTimer {
@@ -11858,10 +11626,8 @@ STDMETHODIMP HackerContext::Map(THIS_
 	// the other half of the census in IASetVertexBuffers. Read-only.
 	CensusNoteMap(pResource, MapType);
 
-	// One classification per Map, shared by every block below. This used to
-	// call GetType twice and GetDesc up to three times on every WRITE_DISCARD,
-	// and the game issues thousands of those a frame - measured at 0.87 us per
-	// hooked constant-buffer call, 6.4 ms a frame.
+	// Resource type and buffer desc, fetched once per WRITE_DISCARD map for the
+	// blocks below.
 	D3D11_BUFFER_DESC bd = {};
 	bool haveBufferDesc = false;
 	if (SUCCEEDED(hr) && MapType == D3D11_MAP_WRITE_DISCARD && pMappedResource && pResource) {
@@ -11912,6 +11678,15 @@ STDMETHODIMP HackerContext::Map(THIS_
 				break;
 			}
 		}
+	}
+
+	if (haveBufferDesc && !sObservedPS3Buffers.empty()
+		&& sObservedPS3Buffers.count((ID3D11Buffer *)pResource)
+		&& (bd.BindFlags & D3D11_BIND_CONSTANT_BUFFER) && bd.ByteWidth >= 208
+		&& bd.ByteWidth <= 4096) {
+		sMappedPS3Buffer = (ID3D11Buffer *)pResource;
+		sMappedPS3Data = pMappedResource->pData;
+		sMappedPS3Bytes = bd.ByteWidth;
 	}
 
 	if (haveBufferDesc && sObservedPS12Buffers.count((ID3D11Buffer *)pResource)) {
@@ -11991,7 +11766,7 @@ STDMETHODIMP HackerContext::Map(THIS_
 				&& mContextTypeImmediate == 1
 				&& (s.synced || MapType == D3D11_MAP_WRITE_DISCARD)) {
 				s.driver = (unsigned char *)driverData;
-				if (!s.watchClean || StereoSinglePass::UnmapLegacyEnabled())
+				if (!s.watchClean)
 					ResetWriteWatch(s.mem, s.bytes);
 				s.watchClean = false;
 				if (MapType == D3D11_MAP_WRITE_DISCARD)
@@ -12074,6 +11849,17 @@ STDMETHODIMP_(void) HackerContext::Unmap(THIS_
 		break;
 	}
 
+	if (sMappedPS3Buffer == (ID3D11Buffer *)pResource && sMappedPS3Data) {
+		LaserLightCBSnapshot &snapshot = sPS3Snapshots[sMappedPS3Buffer];
+		snapshot.bytes = min((UINT)sizeof(snapshot.data), sMappedPS3Bytes);
+		memcpy(snapshot.data, sMappedPS3Data, snapshot.bytes);
+		snapshot.frame = G->frame_no;
+		snapshot.valid = true;
+		sMappedPS3Buffer = NULL;
+		sMappedPS3Data = NULL;
+		sMappedPS3Bytes = 0;
+	}
+
 	if (sMappedPS12Buffer == (ID3D11Buffer *)pResource && sMappedPS12Data) {
 		LaserLightCBSnapshot &snapshot = sPS12Snapshots[sMappedPS12Buffer];
 		snapshot.bytes = min((UINT)sizeof(snapshot.data), sMappedPS12Bytes);
@@ -12088,9 +11874,7 @@ STDMETHODIMP_(void) HackerContext::Unmap(THIS_
 	if (sClipMappedBuffer == (ID3D11Buffer *)pResource && sClipMappedData) {
 		const LONGLONG secStart = TicksNow();
 		ClipPlaneSnapshot &snapshot = sClipPlaneSnapshots[sClipMappedBuffer];
-		// Same result as clearing the whole 4 KB snapshot and copying, but only
-		// the unused tails are zeroed - this runs for every small constant
-		// buffer written with DISCARD, thousands of times a frame.
+		// Copy the written bytes; zero only the unused tail.
 		const UINT dataBytes = min((UINT)sizeof(snapshot.data), sClipMappedBytes);
 		const UINT valueBytes = min((UINT)sizeof(snapshot.values), sClipMappedBytes);
 		memcpy(snapshot.data, sClipMappedData, dataBytes);
@@ -12151,16 +11935,12 @@ STDMETHODIMP_(void) HackerContext::Unmap(THIS_
 			continue;
 		ID3D11Buffer *const scanBuf = sScanMapped[i].buf;
 		const UINT scanBytes = sScanMapped[i].bytes;
-		const bool legacy = StereoSinglePass::UnmapLegacyEnabled();
 		// Map only records constant buffers here, so IsBonePaletteBuffer's answer
 		// is the byte range alone - without its GetDesc, twice per palette write.
-		const bool palette = legacy ? IsBonePaletteBuffer(scanBuf)
-			: (scanBytes >= 3856 && scanBytes <= 4096);
+		const bool palette = scanBytes >= 3856 && scanBytes <= 4096;
 		LONGLONG secStart = TicksNow();
-		// Every character's palette write used to be copied twice (~4 KB each)
-		// although only the hand/lighter paths ever read a copy back, and only
-		// for their own buffer. Copy just the buffers something has asked for.
-		if (palette && (legacy || sBonePaletteSnapshotWanted.count(scanBuf))) {
+		// Snapshot only the palettes a reader has asked for.
+		if (palette && sBonePaletteSnapshotWanted.count(scanBuf)) {
 			BonePaletteCPUSnapshot &snapshot = sBonePaletteCPUSnapshots[scanBuf];
 			snapshot.data.resize(scanBytes);
 			memcpy(snapshot.data.data(), sScanMapped[i].data, scanBytes);
@@ -12173,7 +11953,7 @@ STDMETHODIMP_(void) HackerContext::Unmap(THIS_
 		secStart = TicksNow();
 		StereoTwin::gUnmapSecTicks[StereoTwin::kUnmapSecPalettePatch] += secStart - secMid;
 		StereoTwin::gUnmapSecHits[StereoTwin::kUnmapSecPalettePatch]++;
-		if (palette && (legacy || sBonePaletteUploadWanted.count(scanBuf))) {
+		if (palette && sBonePaletteUploadWanted.count(scanBuf)) {
 			BonePaletteCPUSnapshot &uploaded = sBonePaletteUploaded[scanBuf];
 			uploaded.data.resize(scanBytes);
 			memcpy(uploaded.data.data(), sScanMapped[i].data, scanBytes);
@@ -12217,6 +11997,9 @@ STDMETHODIMP_(void) HackerContext::PSSetConstantBuffers(THIS_
 		for (UINT vrS = 0; vrS < kTrackedCBSlots; vrS++)
 			if (StartSlot <= vrS && vrS < StartSlot + NumBuffers)
 				sBoundPSCB[vrS] = ppConstantBuffers[vrS - StartSlot];
+		if (StartSlot <= 3 && 3 < StartSlot + NumBuffers && ppConstantBuffers[3 - StartSlot]
+			&& sObservedPS3Buffers.size() < 64)
+			sObservedPS3Buffers.insert(ppConstantBuffers[3 - StartSlot]);
 		if (StartSlot <= 12 && 12 < StartSlot + NumBuffers) {
 			ID3D11Buffer *buf = ppConstantBuffers[12 - StartSlot];
 			if (buf) {
@@ -13869,6 +13652,8 @@ void HackerContext::PatchForBothEyes(TrackedVRSlot &tracked)
 			memcpy(sOccLastCamera.eyeVP[1], (const float *)scratch.data() + 56, 16 * sizeof(float));
 			memcpy(sOccLastCamera.eyeView[0], savedView, sizeof(savedView));
 			memcpy(sOccLastCamera.eyeView[1], sEye1View3x4, sizeof(sEye1View3x4));
+			memcpy(sOccLastCamera.eyeP[0], (const float *)tracked.mappedData + 24, 16 * sizeof(float));
+			memcpy(sOccLastCamera.eyeP[1], (const float *)scratch.data() + 24, 16 * sizeof(float));
 			sOccLastCamera.valid = true;
 		}
 	}
@@ -13880,8 +13665,7 @@ void HackerContext::PatchForBothEyes(TrackedVRSlot &tracked)
 	memcpy(G->vrCachedProjection4x4, savedProj, sizeof(savedProj));
 	memcpy(G->vrViewCorrection3x4, savedCorrection, sizeof(savedCorrection));
 
-	// The slot's buffer can change width between passes; eye1CB used to keep
-	// the width it was first created at for the rest of the session.
+	// Recreate eye1CB when the tracked buffer's width changes.
 	if (tracked.eye1CB && tracked.eye1CBBytes != tracked.byteWidth) {
 		tracked.eye1CB->Release();
 		tracked.eye1CB = NULL;
@@ -13905,12 +13689,8 @@ void HackerContext::PatchForBothEyes(TrackedVRSlot &tracked)
 		if (tracked.eye1CB)
 			tracked.eye1CBBytes = tracked.byteWidth;
 	}
-	// The right eye's bytes reach the vertex shader through the in-place
-	// rewrite in BeginTwinPass; eye1CB itself is only read once a twin draw
-	// binds it to the pixel shader. So upload it lazily, at that bind, instead
-	// of on every camera/object buffer write (~2000 a frame) - unless it is
-	// still bound to the pixel shader from an earlier twin draw, where the old
-	// immediate refresh is kept so the output is unchanged.
+	// eye1CB is read only once a twin draw binds it to the pixel shader, so it is
+	// uploaded lazily at that bind; while it is still bound, it is refreshed now.
 	if (tracked.eye1CB) {
 		if (tracked.eye1BoundPS) {
 			mOrigContext1->UpdateSubresource(tracked.eye1CB, 0, NULL, scratch.data(), 0, 0);
@@ -13986,10 +13766,8 @@ void HackerContext::PatchForBothEyes(TrackedVRSlot &tracked)
 // the obvious suspect, but "obvious" has not had a good record here.
 // How many CONSECUTIVE doubled draws happen between render-target changes.
 //
-// The Map/Unmap split and section timers answered their questions (driver vs
-// body, then which block). Left on, their QueryPerformanceCounter calls - up
-// to eight per Map/Unmap pair, ~3000 pairs a frame - were a measurable share
-// of the hook time they were measuring. The report lines then read zero.
+// Per-section Map/Unmap timers. Off: their QueryPerformanceCounter calls
+// distort what they measure.
 static const bool kHookSplitTimingEnabled = false;
 static LONGLONG TicksNow()
 {
@@ -14086,11 +13864,6 @@ bool HackerContext::WantsSecondEye()
 // handful of full-screen quads, not the 500-odd geometry draws that cost the
 // framerate.
 static ID3D11VertexShader *sSinglePassOriginalVS = NULL;
-// Set when a folded instanced draw bound the step-2 companion layout, so
-// EndSinglePass puts the game's layout back.
-static bool sSinglePassSwappedLayout = false;
-// StartInstanceLocation of the instanced draw about to ask BeginSinglePass.
-static UINT sFoldStartInstance = 0;
 
 // Which of the bisection's categories does this draw belong to? One draw is in
 // exactly one category, so the phases add up rather than overlapping.
@@ -14143,36 +13916,25 @@ bool HackerContext::BeginSinglePass(bool instanced)
 	if (StereoTwin::gBisectRunning)
 		return false;
 
-	// The two gates below do not return: they record a bit and let the draw be
-	// tested by every remaining gate, so the census can say how many draws
-	// would REALLY fold if that gate were opened. Sitting first in the chain,
-	// they otherwise hide everything behind them - a draw counted as
-	// "instanced" may also be failing three later tests, and opening the gate
-	// would then buy nothing. Nothing is committed until the check at the end.
+	// Deferred gates set a bit instead of returning, so the census can count the
+	// draws blocked only by them.
 	enum {
 		kBlockInstanced = 1,
 		kBlockDepthTested = 2,
 		kBlockSceneBuffer = 4
 	};
 	UINT blocked = 0;
-	ID3D11InputLayout *foldLayout = NULL;
 
-	// Already-instanced draws are excluded unless vr_fold_instanced.txt opens
-	// them, in which case the companion layout described below is used. The
-	// step-rate arithmetic is only unambiguous from instance 0, so a draw that
-	// starts part-way into its instance stream stays on the double-draw path.
-	//
-	// Doubling the instance count is not enough for them: the shader's own
-	// SV_InstanceID can be mapped back in the patch, but the INPUT ASSEMBLER
-	// fetches per-instance vertex data using the real instance index, which no
-	// shader edit can reach. The right eye's copy of an object therefore reads
-	// the next object's transform - which is exactly what a sideways NPC and
-	// props flickering into your face look like. The fix is a second input
-	// layout with every per-instance element's InstanceDataStepRate doubled,
-	// which is worth doing once the ordinary geometry is proven.
-	if (instanced && !(StereoSinglePass::FoldInstancedEnabled() && sFoldStartInstance == 0
-			&& StereoSinglePass::InstanceFoldLayout(sCurrentInputLayout, &foldLayout)))
+	// Already-instanced draws stay on double-draw: the input assembler fetches
+	// per-instance data by the real instance index, so the right eye's copy of an
+	// object would read the next object's instance data.
+	if (instanced) {
+		if (!VRPerf::Active()) {
+			StereoSinglePass::gDeclinedInstanced++;
+			return false;
+		}
 		blocked |= kBlockInstanced;
+	}
 
 	// Cached at the bind, so this costs nothing per draw.
 	const UINT64 singlePassVSHash = mCurrentVertexShader;
@@ -14351,11 +14113,8 @@ bool HackerContext::BeginSinglePass(bool instanced)
 		return false;
 	}
 
-	// Everything above is a pure test; nothing has been committed yet. A draw
-	// held back only by one of the deferred gates is exactly what opening that
-	// gate would buy, so count it and leave. (The both-slice views below are
-	// not checked for these - that gate declines 0-2 draws a frame, so it
-	// cannot move the number materially.)
+	// No state changed yet. A draw blocked only by deferred gates is counted as
+	// foldable-if-opened.
 	if (blocked) {
 		if (blocked == kBlockInstanced)
 			StereoSinglePass::gFoldableIfInstanced++;
@@ -14430,9 +14189,6 @@ bool HackerContext::BeginSinglePass(bool instanced)
 	sSinglePassOriginalVS = mCurrentVertexShaderHandle;
 	mOrigContext1->VSSetShader(variant, NULL, 0);
 	mOrigContext1->OMSetRenderTargets(sBoundRTVCount, bothRTVs, bothDSV);
-	sSinglePassSwappedLayout = instanced && foldLayout;
-	if (sSinglePassSwappedLayout)
-		mOrigContext1->IASetInputLayout(foldLayout);
 
 	StereoSinglePass::gDraws++;
 	StereoTwin::gDoubledDraws++;
@@ -14443,9 +14199,6 @@ void HackerContext::EndSinglePass()
 {
 	mOrigContext1->VSSetShader(sSinglePassOriginalVS, NULL, 0);
 	mOrigContext1->OMSetRenderTargets(sBoundRTVCount, sBoundRTVs, sBoundDSV);
-	if (sSinglePassSwappedLayout)
-		mOrigContext1->IASetInputLayout(sCurrentInputLayout);
-	sSinglePassSwappedLayout = false;
 	sSinglePassOriginalVS = NULL;
 }
 
@@ -14558,13 +14311,13 @@ bool HackerContext::HoldForSecondEye(int kind, UINT p0, UINT p1, UINT p2, UINT p
 // still point into the old one - including eye1CB, which is a buffer the old
 // device owned. Left alone, the next constant buffer update writes through a
 // dangling pointer.
+static void ReleaseScenePatchDeviceObjects();
+
 void ResetVRDeviceState(bool deviceReplaced)
 {
-	// A new swap chain on the same device leaves every buffer valid, and Metro
-	// does not rebind its camera/object constant buffers afterwards: dropping
-	// them here left the second eye without its own matrices for the rest of
-	// the session (eye-CB swaps 0 from the rebuild on). Only a replaced device
-	// invalidates them.
+	// A new swap chain keeps the device's buffers valid, and Metro never rebinds
+	// its camera/object constant buffers, so device-owned state is dropped only
+	// when the device itself is replaced.
 	if (deviceReplaced) {
 		if (sClipEye1CB) {
 			sClipEye1CB->Release();
@@ -14616,6 +14369,7 @@ void ResetVRDeviceState(bool deviceReplaced)
 		// Late-2D UI layer device objects, and the tracked output-merger
 		// state, which still names the old device's blend state.
 		ReleaseUILayerDeviceObjects();
+		ReleaseScenePatchDeviceObjects();
 		sOMBlendState = NULL;
 		for (int i = 0; i < 4; i++)
 			sOMBlendFactor[i] = 1.0f;
@@ -15383,9 +15137,8 @@ bool HackerContext::BeginTwinPass(bool instanced)
 					tracked.eye1PSBytes.data(), 0, 0);
 				tracked.eye1Dirty = false;
 			}
-			// Still bound from the previous twin draw unless something rebound
-			// the slot, which clears eye1BoundPS (the PSSetConstantBuffers hooks,
-			// the batch replay, device reset). ~2600 redundant binds a frame.
+			// Skip the bind while eye1CB is still bound (any PS constant-buffer rebind
+			// clears eye1BoundPS).
 			if (!tracked.eye1BoundPS) {
 				mOrigContext1->PSSetConstantBuffers(tracked.slot, 1, &tracked.eye1CB);
 				tracked.eye1BoundPS = true;
@@ -15393,8 +15146,7 @@ bool HackerContext::BeginTwinPass(bool instanced)
 			StereoTwin::gEyeCBPSBinds++;
 		}
 	}
-	// No palette has ever been registered in any profile, and these two loops
-	// asked all twelve slots twice per doubled draw.
+	// Skip the palette-twin scan when no palettes are registered.
 	if (!sPalettes.empty()) {
 		for (UINT slot = 2; slot < kTrackedCBSlots; slot++) {
 			ID3D11Buffer *twin = CachedPaletteTwin(slot, sBoundVSCB[slot]);
@@ -15675,6 +15427,9 @@ bool HackerContext::BeginTwinPass(bool instanced)
 #endif
 		}
 	}
+
+	// Right eye's m_screen for the deferred combine's bloom reflections.
+	BloomReflectionTwin(mOrigContext1);
 
 	return true;
 }
@@ -16136,9 +15891,8 @@ static unsigned char *ReadBufferRange(ID3D11DeviceContext1 *ctx, ID3D11Buffer *s
 	return out;
 }
 
-// Profiler: every call below is timed and attributed to its source line, so
-// the summary shows which per-frame readback paths are actually running and
-// what their pipeline stalls cost.
+// ReadBufferRange with CPU fast paths (uploaded palettes, dynamic VB shadows);
+// real readbacks are timed per call site for the profiler.
 static unsigned char *ReadBufferRangeTimed(int site, ID3D11DeviceContext1 *ctx,
 	ID3D11Buffer *src, UINT offset, UINT bytes)
 {
@@ -16169,6 +15923,263 @@ static unsigned char *ReadBufferRangeTimed(int site, ID3D11DeviceContext1 *ctx,
 }
 #define ReadBufferRange(ctx, src, offset, bytes) \
 	ReadBufferRangeTimed(__LINE__, ctx, src, offset, bytes)
+
+// Metro2033ReduxVR: lamp lens flare (VS 77840E246BBF6E55, PS 8281F4D8AE4065B0).
+//
+// Metro builds each flare on the CPU as 2-8 world-space quads (6-48 indices,
+// stride 24, float3 position first, identity m_W). The first quad is the lamp
+// glow and stays fixed in the world. Quads sitting elsewhere are lens-flare
+// ghosts: Metro places them relative to its own screen centre, so in the
+// headset they slide across the view with every head turn. Quads on the lamp's
+// ray at the lamp's distance (the glow's own layers) are kept.
+//
+// The draw's vertices come from the CPU shadow of Metro's dynamic vertex buffer
+// (no GPU readback); ghost quads are collapsed onto the camera position, which
+// makes them degenerate and clipped, and the draw uses a private copy of the
+// vertices. vr_fix_lamp_glow_off.txt beside d3d11.dll leaves the flares native.
+namespace {
+	ID3D11Buffer *sLampFlareVB = NULL;
+	bool sLampFlareBound = false;
+	ID3D11Buffer *sLampFlareOrigVB = NULL;
+	UINT sLampFlareOrigStride = 0, sLampFlareOrigOffset = 0;
+	// (index buffer, offset, start, count) -> first vertex index, or -1 when the
+	// indices are not the i, i+1, i+2, i+3, i+2, i+1 quad pattern.
+	std::unordered_map<unsigned long long, int> sLampFlarePatterns;
+}
+
+static bool LampFlareEnabled()
+{
+	static int off = -1;
+	if (off < 0)
+		off = StereoSinglePass::FlagFilePresent(L"vr_fix_lamp_glow_off.txt") ? 1 : 0;
+	return off == 0;
+}
+
+// Camera origin of a row-major perspective VP: clip (0, 0, k, 0), i.e. column 2
+// of the inverse. Every flare corner is equidistant from this point.
+static bool LampFlareCameraPosition(const float vp[16], float out[3])
+{
+	float inv[16];
+	if (!VRPose::Invert4x4(vp, inv) || !(fabsf(inv[14]) > 1e-8f))
+		return false;
+	out[0] = inv[2] / inv[14];
+	out[1] = inv[6] / inv[14];
+	out[2] = inv[10] / inv[14];
+	return isfinite(out[0]) && isfinite(out[1]) && isfinite(out[2]);
+}
+
+// Before a flare draw. On success the private vertex buffer is bound at slot 0
+// and baseVertex is rewritten for it; LampFlareRestore must follow the draw.
+static bool LampFlareBegin(ID3D11Device1 *device, ID3D11DeviceContext1 *ctx, UINT64 vs, UINT64 ps,
+	UINT indexCount, UINT startIndex, INT &baseVertex)
+{
+	if (vs != 0x77840E246BBF6E55ull || ps != 0x8281F4D8AE4065B0ull)
+		return false;
+	if (!LampFlareEnabled() || !device || !ctx)
+		return false;
+	const UINT nq = indexCount / 6;
+	if (indexCount % 6 != 0 || nq < 2 || nq > 8)
+		return false;
+	const OccCameraSnapshot &cam = sOccSceneCamera;
+	float C[3];
+	if (!cam.valid || !LampFlareCameraPosition(cam.engineVP, C))
+		return false;
+
+	ID3D11Buffer *vb = NULL, *ib = NULL;
+	UINT stride = 0, vbOffset = 0, ibOffset = 0;
+	DXGI_FORMAT ibFormat = DXGI_FORMAT_UNKNOWN;
+	ctx->IAGetVertexBuffers(0, 1, &vb, &stride, &vbOffset);
+	ctx->IAGetIndexBuffer(&ib, &ibFormat, &ibOffset);
+	struct ReleaseOnExit {
+		ID3D11Buffer **p;
+		~ReleaseOnExit() { if (*p) (*p)->Release(); }
+	} releaseVB = { &vb }, releaseIB = { &ib };
+	if (!vb || !ib || stride != 24)
+		return false;
+
+	// Index pattern, checked once per (buffer, offset, start, count).
+	const unsigned long long key = ((unsigned long long)(ULONG_PTR)ib * 1099511628211ull)
+		^ ((unsigned long long)startIndex << 8) ^ indexCount ^ ((unsigned long long)ibOffset << 40);
+	int origin = -1;
+	auto found = sLampFlarePatterns.find(key);
+	if (found != sLampFlarePatterns.end()) {
+		origin = found->second;
+	} else if (sLampFlarePatterns.size() < 4096) {
+		const UINT isz = ibFormat == DXGI_FORMAT_R32_UINT ? 4 : 2;
+		unsigned char *raw = ReadBufferRange(ctx, ib, ibOffset + startIndex * isz, indexCount * isz);
+		if (raw) {
+			const UINT first = isz == 4 ? *(UINT32 *)raw : *(UINT16 *)raw;
+			static const UINT kQuad[6] = { 0, 1, 2, 3, 2, 1 };
+			bool ok = first < 0x10000000u;
+			for (UINT i = 0; i < indexCount && ok; i++) {
+				const UINT v = isz == 4 ? *(UINT32 *)(raw + i * 4) : *(UINT16 *)(raw + i * 2);
+				ok = v == first + (i / 6) * 4 + kQuad[i % 6];
+			}
+			free(raw);
+			origin = ok ? (int)first : -1;
+		}
+		sLampFlarePatterns[key] = origin;
+	}
+	if (origin < 0 || baseVertex + origin < 0)
+		return false;
+
+	const UINT count = nq * 4;
+	unsigned char *verts = ReadShadowRange(vb, vbOffset + (UINT)(baseVertex + origin) * stride, count * stride);
+	if (!verts)
+		return false;
+	struct FreeOnExit {
+		unsigned char *p;
+		~FreeOnExit() { free(p); }
+	} freeVerts = { verts };
+
+	// Per quad: the direction from C to its visible centre and the mean corner
+	// distance. The VS maps uv linearly in screen space, so the texture centre is
+	// where the diagonals 0-3 and 1-2 cross; seen from C that is
+	// cross(cross(r0, r3), cross(r1, r2)). The corner mean is far off for wide quads.
+	float dir[8][3], dist[8], lampHalfAngle = 0.0f;
+	for (UINT q = 0; q < nq; q++) {
+		float r[4][3], dmin = 1e30f, dmax = 0.0f, dsum = 0.0f, sum[3] = {};
+		for (int k = 0; k < 4; k++) {
+			const float *p = (const float *)(verts + (q * 4 + k) * stride);
+			for (int a = 0; a < 3; a++) {
+				r[k][a] = p[a] - C[a];
+				sum[a] += r[k][a];
+			}
+			const float d = sqrt(r[k][0] * r[k][0] + r[k][1] * r[k][1] + r[k][2] * r[k][2]);
+			dmin = min(dmin, d);
+			dmax = max(dmax, d);
+			dsum += d;
+		}
+		auto cross3 = [](const float *a, const float *b, float *o) {
+			o[0] = a[1] * b[2] - a[2] * b[1];
+			o[1] = a[2] * b[0] - a[0] * b[2];
+			o[2] = a[0] * b[1] - a[1] * b[0];
+		};
+		float n03[3], n12[3], dd[3];
+		cross3(r[0], r[3], n03);
+		cross3(r[1], r[2], n12);
+		cross3(n03, n12, dd);
+		if (dd[0] * sum[0] + dd[1] * sum[1] + dd[2] * sum[2] < 0.0f) {
+			dd[0] = -dd[0];
+			dd[1] = -dd[1];
+			dd[2] = -dd[2];
+		}
+		const float cl = sqrt(dd[0] * dd[0] + dd[1] * dd[1] + dd[2] * dd[2]);
+		const float nn = sqrt(n03[0] * n03[0] + n03[1] * n03[1] + n03[2] * n03[2])
+			* sqrt(n12[0] * n12[0] + n12[1] * n12[1] + n12[2] * n12[2]);
+		dist[q] = dsum * 0.25f;
+		if (!(isfinite(dsum) && isfinite(cl) && isfinite(nn) && nn > 0.0f && cl > 1e-3f * nn
+				&& dist[q] > 0.05f && (dmax - dmin) <= 0.005f * dist[q] + 1e-3f))
+			return false;   // not the expected camera-facing quads
+		for (int a = 0; a < 3; a++)
+			dir[q][a] = dd[a] / cl;
+		if (q == 0) {
+			for (int k = 0; k < 4; k++) {
+				const float d = sqrt(r[k][0] * r[k][0] + r[k][1] * r[k][1] + r[k][2] * r[k][2]);
+				lampHalfAngle = max(lampHalfAngle, (float)acos(max(-1.0f, min(1.0f,
+					(r[k][0] * dir[0][0] + r[k][1] * dir[0][1] + r[k][2] * dir[0][2]) / d))));
+			}
+		}
+	}
+	// A lamp glow wider than ~70 degrees gives no reliable lamp direction.
+	if (dist[0] < 0.5f || lampHalfAngle > 1.22f)
+		return false;
+
+	UINT hidden = 0;
+	for (UINT q = 1; q < nq; q++) {
+		const float cosA = dir[q][0] * dir[0][0] + dir[q][1] * dir[0][1] + dir[q][2] * dir[0][2];
+		if (acos(max(-1.0f, min(1.0f, cosA))) < 0.00087f && fabsf(dist[0] / dist[q] - 1.0f) < 1e-3f)
+			continue;   // a layer of the lamp glow itself
+		for (int k = 0; k < 4; k++)
+			memcpy(verts + (q * 4 + k) * stride, C, sizeof(C));
+		hidden++;
+	}
+	if (!hidden)
+		return false;
+
+	if (!sLampFlareVB) {
+		D3D11_BUFFER_DESC bd = {};
+		bd.ByteWidth = 24 * 32;
+		bd.Usage = D3D11_USAGE_DYNAMIC;
+		bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+		bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+		if (FAILED(device->CreateBuffer(&bd, NULL, &sLampFlareVB)))
+			return false;
+	}
+	D3D11_MAPPED_SUBRESOURCE m;
+	if (FAILED(ctx->Map(sLampFlareVB, 0, D3D11_MAP_WRITE_DISCARD, 0, &m)))
+		return false;
+	memcpy(m.pData, verts, count * stride);
+	ctx->Unmap(sLampFlareVB, 0);
+
+	sLampFlareOrigVB = vb;             // reference handed to LampFlareRestore
+	vb = NULL;
+	sLampFlareOrigStride = stride;
+	sLampFlareOrigOffset = vbOffset;
+	const UINT zero = 0;
+	ctx->IASetVertexBuffers(0, 1, &sLampFlareVB, &stride, &zero);
+	sLampFlareBound = true;
+	baseVertex = -origin;              // the private buffer holds vertex `origin` at 0
+	return true;
+}
+
+static void LampFlareRestore(ID3D11DeviceContext1 *ctx)
+{
+	if (!sLampFlareBound)
+		return;
+	sLampFlareBound = false;
+	ctx->IASetVertexBuffers(0, 1, &sLampFlareOrigVB, &sLampFlareOrigStride, &sLampFlareOrigOffset);
+	if (sLampFlareOrigVB)
+		sLampFlareOrigVB->Release();
+	sLampFlareOrigVB = NULL;
+}
+
+// Device objects owned by the occlusion remap, the floor-reflection and lamp
+// flare fixes and the dynamic-buffer shadows, released when the device is
+// replaced so nothing from the old device is used with the new one.
+template <class T> static void ReleaseComObject(T *&object)
+{
+	if (object) {
+		object->Release();
+		object = NULL;
+	}
+}
+
+static void ReleaseScenePatchDeviceObjects()
+{
+	ReleaseComObject(sOccRemapVS);
+	ReleaseComObject(sOccRemapPS);
+	ReleaseComObject(sOccRemapCB);
+	ReleaseComObject(sOccRemapDSS);
+	ReleaseComObject(sOccRemapRS);
+	ReleaseComObject(sOccRemapInputSRV);
+	ReleaseComObject(sOccRemapOutSRV);
+	ReleaseComObject(sOccRemapOutDSV);
+	ReleaseComObject(sOccRemapOut);
+	ReleaseComObject(sOccRemapDisplaced);
+	sOccRemapSource = NULL;
+	sOccRemapInitFailed = false;
+	sOccLastCamera.valid = false;
+	sOccSceneCamera.valid = false;
+
+	ReleaseComObject(sBloomReflCB);
+	sBloomReflCBBytes = 0;
+	sBloomReflSwapped = false;
+
+	ReleaseComObject(sLampFlareOrigVB);
+	sLampFlareBound = false;
+	ReleaseComObject(sLampFlareVB);
+	sLampFlarePatterns.clear();
+
+	for (auto &entry : sDynamicShadows) {
+		if (entry.second.mem) {
+			VirtualFree(entry.second.mem, 0, MEM_RELEASE);
+			entry.first->Release();
+		}
+	}
+	sDynamicShadows.clear();
+	sBonePaletteUploaded.clear();
+}
 
 // Some separated-hand families are deliberately accepted outside the
 // compressed-depth viewmodel pass. Index count plus generic skin shaders does
@@ -18800,8 +18811,6 @@ STDMETHODIMP_(void) HackerContext::CopySubresourceRegion(THIS_
 	VRPERF_HOOK(kHookClearCopy);
 	if (kResolutionDiagnosticsEnabled)
 		LogLargeResolutionCopy(pDstResource, pSrcResource, "copy-region");
-	if (pSrcResource && pSrcResource == sOccProbeResource)
-		OccProbeNoteCopy(pDstResource, "CopySubresourceRegion", _ReturnAddress());
 	D3D11_BOX replaceSrcBox;
 	UINT replaceDstX = DstX;
 
@@ -18873,8 +18882,6 @@ STDMETHODIMP_(void) HackerContext::CopyResource(THIS_
 	VRPERF_HOOK(kHookClearCopy);
 	if (kResolutionDiagnosticsEnabled)
 		LogLargeResolutionCopy(pDstResource, pSrcResource, "copy-resource");
-	if (pSrcResource && pSrcResource == sOccProbeResource)
-		OccProbeNoteCopy(pDstResource, "CopyResource", _ReturnAddress());
 	if (G->hunting && G->track_texture_updates != 2) { // Any hunting mode - want to catch hash contamination even while soft disabled
 		MarkResourceHashContaminated(pDstResource, 0, pSrcResource, 0, 'C', 0, 0, 0, NULL);
 	}
@@ -19288,10 +19295,8 @@ STDMETHODIMP_(void) HackerContext::SetShader(THIS_
 		// lookup/find takes measurable amounts of CPU time.
 		//
 		// grumble grumble this optimisation caught me out *TWICE* grumble grumble -DSS
-		// Metro2033ReduxVR: always cache the hash here. Upstream skipped this
-		// lookup when no ShaderOverride was configured, but this mod's draw
-		// classifiers then each looked the hash up themselves - about 28000 map
-		// lookups a frame against roughly 2700 shader binds.
+		// Metro2033ReduxVR: always resolve the hash at bind time; the draw
+		// classifiers read it on every draw.
 		{
 			ShaderMap::iterator i = lookup_shader_hash(pShader);
 			if (i != G->mShaders.end()) {
@@ -19816,6 +19821,8 @@ STDMETHODIMP_(void) HackerContext::ClearState(THIS)
 		 sBoundDSCB[i] = NULL;
 		 sBoundGSCB[i] = NULL;
 	 }
+	 for (TrackedVRSlot &tracked : sTrackedVRSlots)
+		 tracked.eye1BoundPS = false;
 
 	 // ClearState() will unbind StereoParams and IniParams, so we need to
 	 // rebind them now:
@@ -21211,8 +21218,16 @@ STDMETHODIMP_(void) HackerContext::DrawIndexed(THIS_
 		}
 	}
 
-	if (sOccProbeR32FBound && mHackerDevice)
+	if (sOccDownsampleBound && mHackerDevice)
 		OccRemapBeforeDownsample(mHackerDevice->GetPassThroughOrigDevice1(), mOrigContext1);
+	if (mHackerDevice)
+		BloomReflectionBeforeDraw(mHackerDevice->GetPassThroughOrigDevice1(), mOrigContext1, mCurrentPixelShader,
+			sOccSceneCamera.eyeP, sOccSceneCamera.valid);
+	// Lens-flare ghosts hidden (private vertex buffer at slot 0, BaseVertexLocation
+	// rebased onto it); restored after the draw below.
+	const bool lampFlarePatched = LampFlareBegin(mHackerDevice ? mHackerDevice->GetPassThroughOrigDevice1() : NULL,
+		mOrigContext1, mCurrentVertexShader, mCurrentPixelShader, IndexCount, StartIndexLocation,
+		BaseVertexLocation);
 	DrawContext c = DrawContext(DrawCall::DrawIndexed, 0, IndexCount, 0, BaseVertexLocation, StartIndexLocation, 0, NULL, 0);
 	drawSec(StereoTwin::kDrawSecProbes);
 	BeforeDraw(c);
@@ -21230,9 +21245,10 @@ STDMETHODIMP_(void) HackerContext::DrawIndexed(THIS_
 			EndSinglePass();
 			drawSec(StereoTwin::kDrawSecFold);
 			if (!StereoSinglePass::gVerifyByRedraw) {
+				LampFlareRestore(mOrigContext1);
 				AfterDraw(c);
 				drawSec(StereoTwin::kDrawSecAfter);
-				OccProbeAfterDraw(mOrigContext1, mCurrentVertexShader, mCurrentPixelShader);
+				RestoreAfterPatchedDraw(mOrigContext1);
 				return;
 			}
 		} else {
@@ -21244,8 +21260,9 @@ STDMETHODIMP_(void) HackerContext::DrawIndexed(THIS_
 		// Batched when it can be; a draw the batch refuses - anything
 		// reading a buffer the engine recycles between draws - falls
 		// back to issuing it inline, which is slower but always right.
+		// A draw from the private lens-flare vertex buffer never batches.
 		bool vrBatched = false;
-		if (StereoBatch::gEnabled && WantsSecondEye())
+		if (StereoBatch::gEnabled && !lampFlarePatched && WantsSecondEye())
 			vrBatched = HoldForSecondEye(0, IndexCount, StartIndexLocation, (UINT)BaseVertexLocation, 0, 0);
 		const bool twinPassOk = !vrBatched && BeginTwinPass(false);
 		if (twinPassOk) {
@@ -21266,9 +21283,10 @@ STDMETHODIMP_(void) HackerContext::DrawIndexed(THIS_
 			}
 		}
 	}
+	LampFlareRestore(mOrigContext1);
 	AfterDraw(c);
 	drawSec(StereoTwin::kDrawSecAfter);
-	OccProbeAfterDraw(mOrigContext1, mCurrentVertexShader, mCurrentPixelShader);
+	RestoreAfterPatchedDraw(mOrigContext1);
 }
 
 STDMETHODIMP_(void) HackerContext::Draw(THIS_
@@ -21288,8 +21306,11 @@ STDMETHODIMP_(void) HackerContext::Draw(THIS_
 	if (StereoCensus::gActive)
 		StereoCensus::NoteDraw(VertexCount, 1);
 
-	if (sOccProbeR32FBound && mHackerDevice)
+	if (sOccDownsampleBound && mHackerDevice)
 		OccRemapBeforeDownsample(mHackerDevice->GetPassThroughOrigDevice1(), mOrigContext1);
+	if (mHackerDevice)
+		BloomReflectionBeforeDraw(mHackerDevice->GetPassThroughOrigDevice1(), mOrigContext1, mCurrentPixelShader,
+			sOccSceneCamera.eyeP, sOccSceneCamera.valid);
 	DrawContext c = DrawContext(DrawCall::Draw, VertexCount, 0, 0, StartVertexLocation, 0, 0, NULL, 0);
 	BeforeDraw(c);
 
@@ -21301,7 +21322,7 @@ STDMETHODIMP_(void) HackerContext::Draw(THIS_
 			EndSinglePass();
 			if (!StereoSinglePass::gVerifyByRedraw) {
 				AfterDraw(c);
-				OccProbeAfterDraw(mOrigContext1, mCurrentVertexShader, mCurrentPixelShader);
+				RestoreAfterPatchedDraw(mOrigContext1);
 				return;
 			}
 		}
@@ -21319,7 +21340,7 @@ STDMETHODIMP_(void) HackerContext::Draw(THIS_
 		}
 	}
 	AfterDraw(c);
-	OccProbeAfterDraw(mOrigContext1, mCurrentVertexShader, mCurrentPixelShader);
+	RestoreAfterPatchedDraw(mOrigContext1);
 }
 
 STDMETHODIMP_(void) HackerContext::IASetIndexBuffer(THIS_
@@ -21925,11 +21946,8 @@ bool HackerContext::BeginLeftHandBonePalette(bool rigidInstanceOnly,
 		// Unlike Metro's recycled dynamic ring, this buffer is ours and its first
 		// 64 bytes are the completed instance matrix submitted to both eyes.
 		//
-		// Double-buffered and asynchronous: this frame's copy is started, and
-		// the copy started on the PREVIOUS frame is mapped without waiting. The
-		// synchronous read this replaces drained the GPU queue every frame
-		// (measured 0.51 ms/frame). The matrix is one frame old, which only
-		// feeds the left hand's placement correction.
+		// Async readback: copy this frame, map last frame's copy without waiting.
+		// The matrix is one frame late.
 		ID3D11Buffer *submitted = mHackerDevice->GetOrCreateVRWeaponPrivateVB();
 		ID3D11Buffer *stage[2] = {
 			mHackerDevice->GetOrCreateWeaponStaging(0xFFFFFFF0u),
@@ -25834,7 +25852,6 @@ STDMETHODIMP_(void) HackerContext::DrawIndexedInstanced(THIS_
 		// patched shader undoes that before its own code runs, and no per-draw
 		// upload is needed to tell it how - which a "first N are the left eye"
 		// split would have required, on every draw.
-		sFoldStartInstance = StartInstanceLocation;
 		if (BeginSinglePass(true)) {
 			mOrigContext1->DrawIndexedInstanced(IndexCountPerInstance, InstanceCount * 2,
 				StartIndexLocation, BaseVertexLocation, StartInstanceLocation);
@@ -25890,7 +25907,6 @@ STDMETHODIMP_(void) HackerContext::DrawInstanced(THIS_
 	if (!c.call_info.skip) {
 		RestoreEye0IfNeeded();
 
-		sFoldStartInstance = StartInstanceLocation;
 		if (BeginSinglePass(true)) {
 			mOrigContext1->DrawInstanced(VertexCountPerInstance, InstanceCount * 2,
 				StartVertexLocation, StartInstanceLocation);
@@ -25972,29 +25988,13 @@ STDMETHODIMP_(void) HackerContext::OMSetRenderTargets(THIS_
 			sCurrentRTFormat = desc.Format;
 			texture->Release();
 		}
-		// Occlusion probe: the 160x88-class R32F downsample target.
-		sOccProbeR32FBound = NumViews == 1 && !pDepthStencilView
+		// Metro's 160x88-class R32F occlusion downsample target.
+		sOccDownsampleBound = NumViews == 1 && !pDepthStencilView
 			&& sCurrentRTFormat == DXGI_FORMAT_R32_FLOAT
 			&& sCurrentRTWidth > 0 && sCurrentRTWidth <= 400 && sCurrentRTHeight <= 256;
-		if (sOccProbeR32FBound) {
-			sOccProbeRTV = ppRenderTargetViews[0];
-			sOccProbeResource = resource;
-		}
 		if (resource) resource->Release();
 	} else {
-		sOccProbeR32FBound = false;
-	}
-	{
-		static unsigned lastReport = 0;
-		if (G->frame_no - lastReport >= 600 && (sOccProbeDraws || sOccProbeCopies || sOccProbeReadMaps)) {
-			char note[240];
-			sprintf_s(note, "occlusion probe (last %u frames): R32F downsample draws %u, copies from it %u, "
-				"Map(READ) of R32F textures %u, probe clears %u (mode %d)", G->frame_no - lastReport,
-				sOccProbeDraws, sOccProbeCopies, sOccProbeReadMaps, sOccProbeClears, OccProbeMode());
-			VRPerf::Note(note);
-			lastReport = G->frame_no;
-			sOccProbeDraws = sOccProbeCopies = sOccProbeReadMaps = sOccProbeClears = 0;
-		}
+		sOccDownsampleBound = false;
 	}
 	ID3D11RenderTargetView *overlayRTVs[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
 	ID3D11RenderTargetView *const *effectiveRTVs = ppRenderTargetViews;
@@ -26124,10 +26124,11 @@ STDMETHODIMP_(void) HackerContext::OMSetRenderTargetsAndUnorderedAccessViews(THI
 	__in_ecount_opt(NumUAVs)  const UINT *pUAVInitialCounts)
 {
 	VRPERF_HOOK(kHookRenderTarget);
-	// This path changes the real render targets without the tracking that
+	// This path can change the real render targets without the tracking that
 	// OMSetRenderTargets does, so the bound-target caches must not keep
-	// answering from the previous bind.
-	ForgetBoundTargets();
+	// answering from the previous bind. KEEP leaves the targets bound.
+	if (NumRTVs != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL)
+		ForgetBoundTargets();
 	// The census found no compute work and no UAV rendering in this engine,
 	// so this path should never run. If it does it would silently write the
 	// wrong eye's targets - better to say so than leave it to be found later

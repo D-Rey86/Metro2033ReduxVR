@@ -47,8 +47,6 @@ struct Settings {
 	bool ammoCounterEnabled;
 	float hudPosition[3];
 	float hudSize;
-	// Profiler HUD (VRPerf) shown as its own compositor overlay.
-	bool perfHud;
 };
 
 void Initialize();

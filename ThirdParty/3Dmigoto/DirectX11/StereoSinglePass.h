@@ -110,8 +110,7 @@ namespace StereoSinglePass {
 	extern unsigned gDeclinedNoVariant;
 	extern unsigned gDeclinedReadsEye;
 	extern unsigned gDeclinedTessellated;
-	// The rest of the reasons a draw is not folded, so "folded 0" can be
-	// attributed to an exact gate instead of guessed at.
+	// Per-gate decline counters (first failing gate wins).
 	extern unsigned gDeclinedDisabled;
 	extern unsigned gDeclinedPrivateCB;
 	extern unsigned gDeclinedInstanced;
@@ -121,52 +120,28 @@ namespace StereoSinglePass {
 	extern unsigned gDeclinedDepthTested;
 	extern unsigned gDeclinedSceneBuffer;
 	extern unsigned gDeclinedNoBothSliceView;
-	// Draws that fail ONLY the instanced gate, or ONLY the depth-tested one
-	// (with or without the scene-buffer gate that hangs off it). The ordinary
-	// counters above are first-match, so they are upper bounds: a draw counted
-	// as "instanced" may also fail three later gates. These two say how many
-	// draws would really fold if that one gate were opened, which is the number
-	// the work is worth doing for - or not.
+	// Draws blocked only by the instanced gate / only by the depth (and scene-
+	// buffer) gate.
 	extern unsigned gFoldableIfInstanced;
 	extern unsigned gFoldableIfDepth;
 	// SV_RenderTargetArrayIndex from the vertex shader. Without it a folded
 	// draw puts both eyes in slice 0 instead of one per eye.
 	extern bool gVPRTSupported;
-	// Fold depth-tested scene geometry too. Off unless a file named
-	// vr_fold_depth.txt sits beside the game executable, so it can be tried
-	// and reverted without a rebuild and cannot ship on by accident.
+	// Fold depth-tested scene geometry too (follows FoldSceneBufferEnabled).
 	bool FoldDepthTestedEnabled();
-	// Fold the scene-resolution buffers too - the G-buffer and lighting chain,
-	// i.e. the geometry that actually costs the frame. Off unless
-	// vr_fold_scene.txt sits beside the game executable; that file also opens
-	// the depth gate, since this geometry is depth-tested by definition.
+	// Fold the scene-resolution buffers too - the G-buffer and lighting chain.
+	// On unless vr_fold_scene_off.txt sits beside d3d11.dll.
 	bool FoldSceneBufferEnabled();
 	// A marker file beside d3d11.dll (not the process working directory).
 	bool FlagFilePresent(const wchar_t *name);
 
-	// Fold already-instanced draws too. The input assembler fetches
-	// per-instance data by the real instance index, so a doubled instance count
-	// needs a companion input layout whose per-instance elements step every 2
-	// instances. Off unless vr_fold_instanced.txt sits beside the DLL.
-	bool FoldInstancedEnabled();
-	void OnCreateInputLayout(ID3D11Device *device, const D3D11_INPUT_ELEMENT_DESC *elements,
-		UINT count, const void *signature, SIZE_T signatureLength, ID3D11InputLayout *created);
-	// For a draw using `layout`: false when it cannot be folded; otherwise
-	// *bind is the layout to use during the folded draw (NULL: keep `layout`,
-	// it has no per-instance elements).
-	bool InstanceFoldLayout(ID3D11InputLayout *layout, ID3D11InputLayout **bind);
 	// Per-shader opt-out, one hex vertex-shader hash per line of
 	// vr_fold_exclude.txt, so a surface that breaks can be put back on the
 	// proven double-draw path without a rebuild.
 	bool ShaderFoldExcluded(UINT64 vsHash);
-	// Reverts the Unmap-body cuts (palette phase retest throttle, lazy palette
-	// snapshots) when vr_unmap_legacy.txt sits beside the DLL.
-	bool UnmapLegacyEnabled();
 	// One line naming the active policy, for the profiler summary.
 	const char *ReportFoldPolicy();
-	// Accumulates the counters and, every 600 frames, returns one line for the
-	// profiler summary (NULL in between). LogInfo is not used: d3dx.ini logging
-	// is off in the builds this matters for.
+	// Accumulates counters; returns a summary line every 600 frames, else NULL.
 	const char *ReportFrameStats();
 
 	// Real GPU milliseconds per frame, from timestamp queries at Present.

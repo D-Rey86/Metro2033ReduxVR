@@ -24,7 +24,7 @@ namespace VRPerf {
 
 	unsigned long gRenderThreadId = 0;
 	thread_local int HookScope::tDepth = 0;
-	volatile bool gHookTiming = true;
+	volatile bool gHookTiming = false;
 
 	namespace {
 
@@ -182,7 +182,12 @@ namespace VRPerf {
 		std::atomic<unsigned> sBinds(0);
 		unsigned sPrevDoubled = 0, sPrevShared = 0, sPrevEyeCB = 0, sPrevFolded = 0;
 
+		// Inserted by MarkPass on the D3D thread, read on the Present thread.
 		std::unordered_map<unsigned long long, PassInfo> sPassInfo;
+		SRWLOCK sPassInfoLock = SRWLOCK_INIT;
+		// A newly opened D3D-thread handle, adopted (and the old one closed) by
+		// EndPresent on the Present thread.
+		std::atomic<HANDLE> sPendingD3DThreadHandle(NULL);
 		std::unordered_map<unsigned long long, PassAgg> sPassAgg;
 
 		// Interval accumulation (summary file).
@@ -449,6 +454,7 @@ namespace VRPerf {
 		void OpenFiles()
 		{
 			CreateDirectoryA("vr_perf", NULL);
+			FILE *csv = NULL, *summary = NULL;
 			SYSTEMTIME st;
 			GetLocalTime(&st);
 			char stamp[64], path[128];
@@ -456,15 +462,21 @@ namespace VRPerf {
 				st.wHour, st.wMinute, st.wSecond);
 
 			sprintf_s(path, "vr_perf\\%s_frames.csv", stamp);
-			if (fopen_s(&sCsv, path, "w") == 0 && sCsv) {
-				setvbuf(sCsv, NULL, _IOFBF, 1 << 20);
-				for (int c = 0; c < cColCount; c++)
-					sCsvBytes += fprintf(sCsv, c ? ",%s" : "%s", kColNames[c]);
-				sCsvBytes += fprintf(sCsv, "\n");
-			}
+			if (fopen_s(&csv, path, "w") != 0 || !csv)
+				return;
 			sprintf_s(path, "vr_perf\\%s_summary.txt", stamp);
-			if (fopen_s(&sSummary, path, "w") == 0 && sSummary)
-				setvbuf(sSummary, NULL, _IOFBF, 1 << 16);
+			if (fopen_s(&summary, path, "w") != 0 || !summary) {
+				fclose(csv);
+				return;
+			}
+			setvbuf(csv, NULL, _IOFBF, 1 << 20);
+			for (int c = 0; c < cColCount; c++)
+				sCsvBytes += fprintf(csv, c ? ",%s" : "%s", kColNames[c]);
+			sCsvBytes += fprintf(csv, "\n");
+			setvbuf(summary, NULL, _IOFBF, 1 << 16);
+			// Published only once set up; other threads test these pointers.
+			sCsv = csv;
+			sSummary = summary;
 		}
 
 		void WriteHeader(const std::string &adapter)
@@ -546,12 +558,15 @@ namespace VRPerf {
 				}
 				sInterval.Reset();
 				sLive.Reset();
+				sOverlayVisible = StereoSinglePass::FlagFilePresent(L"vr_perf_hud.txt");
 				sInitialised = true;
 			}
 			if (device != sDevice || context != sContext) {
 				const bool recreated = sDevice != nullptr;
 				ReleaseQueries();
+				AcquireSRWLockExclusive(&sPassInfoLock);
 				sPassInfo.clear();
+				ReleaseSRWLockExclusive(&sPassInfoLock);
 				sDevice = device;
 				sContext = context;
 				const std::string adapter = AdapterName(device);
@@ -671,9 +686,11 @@ namespace VRPerf {
 					}
 				}
 				row[cGpuMaxPassMs] = maxMs;
+				AcquireSRWLockShared(&sPassInfoLock);
 				auto info = sPassInfo.find(maxKey);
 				row[cGpuMaxPassId] = maxKey == kKeyFrameStart ? 0.0
 					: (info != sPassInfo.end() ? (double)info->second.id : NAN);
+				ReleaseSRWLockShared(&sPassInfoLock);
 			} else {
 				sInterval.gpuDropped++;
 				sLive.gpuDropped++;
@@ -739,11 +756,15 @@ namespace VRPerf {
 			*id = 0;
 			if (key == kKeyFrameStart)
 				return "(frame start)";
+			AcquireSRWLockShared(&sPassInfoLock);
 			auto info = sPassInfo.find(key);
-			if (info == sPassInfo.end())
-				return "?";
-			*id = info->second.id;
-			return info->second.label;
+			std::string label = "?";
+			if (info != sPassInfo.end()) {
+				*id = info->second.id;
+				label = info->second.label;
+			}
+			ReleaseSRWLockShared(&sPassInfoLock);
+			return label;
 		}
 
 		struct RankedPass { unsigned long long key; PassAgg a; };
@@ -1046,8 +1067,22 @@ namespace VRPerf {
 		return index;
 	}
 
+	bool Active()
+	{
+		static volatile LONG active = -1;   // -1 undecided, 0 off, 1 on
+		LONG a = active;
+		if (a < 0) {
+			InterlockedCompareExchange(&active,
+				(kEnabled && StereoSinglePass::FlagFilePresent(L"vr_perf.txt")) ? 1 : 0, -1);
+			a = active;
+		}
+		return a > 0;
+	}
+
 	const char *ReportSites()
 	{
+		if (!sInitialised)
+			return NULL;
 		static unsigned frames = 0;
 		static unsigned long long accTicks[kMaxSites] = {};
 		static unsigned long long accCalls[kMaxSites] = {};
@@ -1127,7 +1162,7 @@ namespace VRPerf {
 
 	bool OverlayVisible()
 	{
-		return kEnabled && sOverlayVisible;
+		return sInitialised && sOverlayVisible;
 	}
 
 	void ToggleOverlay()
@@ -1137,13 +1172,13 @@ namespace VRPerf {
 
 	void NoteShadowRead()
 	{
-		if (kEnabled)
+		if (sInitialised)
 			sShadowReads.fetch_add(1, std::memory_order_relaxed);
 	}
 
 	void NoteReadback(int site, unsigned long long ticks)
 	{
-		if (!kEnabled)
+		if (!sInitialised)
 			return;
 		sReadbackTicks.fetch_add(ticks, std::memory_order_relaxed);
 		sReadbackCalls.fetch_add(1, std::memory_order_relaxed);
@@ -1167,31 +1202,13 @@ namespace VRPerf {
 
 	void Note(const char *text)
 	{
-		if (kEnabled && sSummary && text)
+		if (sInitialised && sSummary && text)
 			fprintf(sSummary, "NOTE frame %u: %s\n", sFrame, text);
 	}
 
-	volatile int gOcclusionProbeMode = -1;
-	volatile int gOcclusionRemapState = -1;
-
 	const char *OverlayText()
 	{
-		const char *base = sOverlayText.empty() ? "VR PERF  collecting...\n" : sOverlayText.c_str();
-		const int mode = gOcclusionProbeMode;
-		const int remap = gOcclusionRemapState;
-		if (mode < 0 && remap < 0)
-			return base;
-		// Read live every frame, so the line switches the moment the mode does.
-		static std::string text;
-		text.clear();
-		if (remap >= 0)
-			text += remap == 2 ? "OCCLUSION REMAP: ON EXACT\n"
-				: remap ? "OCCLUSION REMAP: ON CONSERVATIVE\n" : "OCCLUSION REMAP: OFF\n";
-		if (mode >= 0)
-			text += mode == 1 ? "OCCLUSION PROBE: 2 FAR\n" : mode == 2 ? "OCCLUSION PROBE: 3 ZERO\n"
-				: "OCCLUSION PROBE: 1 NORMAL\n";
-		text += base;
-		return text.c_str();
+		return sOverlayText.empty() ? "VR PERF  collecting...\n" : sOverlayText.c_str();
 	}
 
 	// vr_pin_hot_threads.txt: keep Metro's D3D submission thread and Present
@@ -1281,7 +1298,7 @@ namespace VRPerf {
 	void BeginPresent(ID3D11Device *device, ID3D11DeviceContext *context)
 	{
 		VRPose::TraceStep("present-enter");
-		if (!kEnabled || !device || !context)
+		if (!kEnabled || !device || !context || !Active())
 			return;
 		gRenderThreadId = GetCurrentThreadId();
 		if (!EnsureInit(device, context))
@@ -1294,7 +1311,8 @@ namespace VRPerf {
 				const bool timing = !StereoSinglePass::FlagFilePresent(L"vr_perf_lite.txt");
 				if (timing != gHookTiming) {
 					gHookTiming = timing;
-					Note(timing ? "perf-lite OFF: per-hook timing resumed"
+					if (presents > 1)
+						Note(timing ? "perf-lite OFF: per-hook timing resumed"
 						: "perf-lite ON (vr_perf_lite.txt): per-hook timing, hook sites and draw sections paused");
 				}
 			}
@@ -1365,6 +1383,12 @@ namespace VRPerf {
 		sInsidePresent = false;
 		ULONG64 cycles = 0, d3dCycles = 0;
 		QueryThreadCycleTime(GetCurrentThread(), &cycles);
+		if (HANDLE adopted = sPendingD3DThreadHandle.exchange(NULL)) {
+			if (sD3DThreadHandle)
+				CloseHandle(sD3DThreadHandle);
+			sD3DThreadHandle = adopted;
+			sPrevD3DCycles = 0;
+		}
 		if (sD3DThreadHandle)
 			QueryThreadCycleTime(sD3DThreadHandle, &d3dCycles);
 
@@ -1518,10 +1542,9 @@ namespace VRPerf {
 		const unsigned long tid = GetCurrentThreadId();
 		if (tid != sD3DThreadId.load(std::memory_order_relaxed)) {
 			sD3DThreadId.store(tid, std::memory_order_relaxed);
-			HANDLE h = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, tid);
-			if (h) {
-				sPrevD3DCycles = 0;
-				sD3DThreadHandle = h;   // the previous handle is leaked; happens once
+			if (HANDLE h = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, tid)) {
+				if (HANDLE unused = sPendingD3DThreadHandle.exchange(h))
+					CloseHandle(unused);
 			}
 		}
 
@@ -1542,7 +1565,10 @@ namespace VRPerf {
 		if (s.nSegs > kMaxMarks)
 			return;
 
-		if (sPassInfo.find(key) == sPassInfo.end()) {
+		AcquireSRWLockShared(&sPassInfoLock);
+		const bool known = sPassInfo.find(key) != sPassInfo.end();
+		ReleaseSRWLockShared(&sPassInfoLock);
+		if (!known) {
 			char label[160];
 			if (numViews > 0 && rtv0 && width) {
 				sprintf_s(label, "%ux%u %s%s%s", width, height, FormatName(format),
@@ -1570,8 +1596,10 @@ namespace VRPerf {
 			}
 			PassInfo info;
 			info.label = label;
+			AcquireSRWLockExclusive(&sPassInfoLock);
 			info.id = (unsigned)sPassInfo.size() + 1;
-			sPassInfo[key] = info;
+			sPassInfo.emplace(key, info);
+			ReleaseSRWLockExclusive(&sPassInfoLock);
 		}
 
 		s.segDraws[s.nSegs - 1] = sPassDraws.exchange(0, std::memory_order_relaxed);
