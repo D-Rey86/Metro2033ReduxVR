@@ -11729,3 +11729,33 @@ remaining basic gestures have been implemented.
   selecting Metro `1920x1080` retained correct video and world presentation;
   the compatibility report recorded the intended `2560x1440` VR source and a
   successful runtime-shaped submission.
+
+### Pull request 2 performance integration candidate — 2026-09-17
+
+- Community pull request 2 (`8be8779`, `b27cc38`) was merged locally into the
+  isolated `codex/pr2-performance-integration` branch from public `main` at
+  `c74d466`. Nothing from this branch has been pushed or merged into public
+  `main` yet.
+- The contributor reports a measured improvement from 36.4 to 71.8 fps in the
+  same Quest 3/SteamVR scene. The main changes reconstruct Metro-compatible CPU
+  occlusion depth instead of using the broad visibility bypasses, fold eligible
+  scene geometry into one two-eye draw, remove synchronous viewmodel readback,
+  cache stereo shader variants and hot-path lookups, and correct several
+  reflection, flare, light-culling, and chapter-select presentation paths.
+- Static validation on the integration branch passes: all eight self-contained
+  C++ tests, the VR-menu verifier, the native-camera build verifier, and a
+  `Release | x64` DirectX11 build. This is not headset or gameplay validation.
+- The always-on `vr_compatibility_log.txt` report was extended without enabling
+  3Dmigoto call logging or continuous profiling. It now records adapter vendor,
+  device, subsystem and memory sizes; D3D feature level and VPRT capability;
+  local/non-local video-memory usage and budget at startup and after warm-up;
+  active stereo, twin, scene-fold, depth-fold, occlusion-remap and visibility
+  policy; raw folded/doubled/shared draw totals and decline reasons after 300
+  accepted submissions; and one OpenVR compositor timing snapshot.
+- Known contributor-reported risks remain for runtime validation: the left hand
+  uses the previous frame's weapon-instance matrix, video-setting recreation can
+  leak UI/profiler resources, the light-culling FOV correction can leave faint
+  shapes at the lower edge near some lights, and the shader-variant disk cache
+  is not pruned between builds. The existing Expanded Visibility menu wording
+  also no longer accurately describes the new default policy because the broad
+  bypasses now require explicit marker files.

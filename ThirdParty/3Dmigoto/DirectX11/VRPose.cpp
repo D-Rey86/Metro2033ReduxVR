@@ -19,6 +19,7 @@
 #include <string>
 #include <openvr.h>
 #include <d3dcompiler.h>
+#include <dxgi1_4.h>
 #include <intrin.h>
 
 #include "lock.h"
@@ -67,6 +68,82 @@ namespace {
 		va_start(args, format);
 		vfprintf(file, format, args);
 		va_end(args);
+	}
+
+	static double CompatibilityMegabytes(UINT64 bytes)
+	{
+		return (double)bytes / (1024.0 * 1024.0);
+	}
+
+	// Keep the public compatibility report useful without enabling 3Dmigoto's
+	// extremely verbose API-call logging. QueryVideoMemoryInfo is a snapshot,
+	// so recording it at startup and once after warm-up has negligible cost.
+	void CompatibilityLogVideoMemory(ID3D11Device *device, const char *phase)
+	{
+		if (!device)
+			return;
+
+		IDXGIDevice *dxgiDevice = nullptr;
+		IDXGIAdapter *adapter = nullptr;
+		IDXGIAdapter3 *adapter3 = nullptr;
+		if (FAILED(device->QueryInterface(__uuidof(IDXGIDevice), (void **)&dxgiDevice)) ||
+			!dxgiDevice)
+			return;
+		if (FAILED(dxgiDevice->GetAdapter(&adapter)) || !adapter) {
+			dxgiDevice->Release();
+			return;
+		}
+		dxgiDevice->Release();
+
+		if (SUCCEEDED(adapter->QueryInterface(__uuidof(IDXGIAdapter3), (void **)&adapter3)) &&
+			adapter3) {
+			DXGI_QUERY_VIDEO_MEMORY_INFO local = {};
+			DXGI_QUERY_VIDEO_MEMORY_INFO nonLocal = {};
+			const HRESULT localHr = adapter3->QueryVideoMemoryInfo(
+				0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &local);
+			const HRESULT nonLocalHr = adapter3->QueryVideoMemoryInfo(
+				0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &nonLocal);
+			if (SUCCEEDED(localHr)) {
+				CompatibilityLog("video_memory phase=%s local_usage_mb=%.0f local_budget_mb=%.0f "
+					"local_available_reservation_mb=%.0f local_reservation_mb=%.0f over_budget=%d\n",
+					phase, CompatibilityMegabytes(local.CurrentUsage),
+					CompatibilityMegabytes(local.Budget),
+					CompatibilityMegabytes(local.AvailableForReservation),
+					CompatibilityMegabytes(local.CurrentReservation),
+					local.CurrentUsage > local.Budget ? 1 : 0);
+			}
+			if (SUCCEEDED(nonLocalHr)) {
+				CompatibilityLog("video_memory phase=%s nonlocal_usage_mb=%.0f nonlocal_budget_mb=%.0f\n",
+					phase, CompatibilityMegabytes(nonLocal.CurrentUsage),
+					CompatibilityMegabytes(nonLocal.Budget));
+			}
+			if (FAILED(localHr) && FAILED(nonLocalHr)) {
+				CompatibilityLog("video_memory phase=%s unavailable local_hr=0x%08x nonlocal_hr=0x%08x\n",
+					phase, (unsigned)localHr, (unsigned)nonLocalHr);
+			}
+			adapter3->Release();
+		} else {
+			CompatibilityLog("video_memory phase=%s unavailable adapter3=0\n", phase);
+		}
+		adapter->Release();
+	}
+
+	void CompatibilityLogStereoPolicy(const char *phase)
+	{
+		CompatibilityLog("stereo_policy phase=%s single_pass=%d vprt=%d slice_twins=%d "
+			"have_twins=%d double_draw=%d redirect_twins=%d fold_scene=%d fold_depth=%d "
+			"occlusion_remap=%d expanded_visibility=%d\n",
+			phase,
+			StereoSinglePass::gEnabled ? 1 : 0,
+			StereoSinglePass::gVPRTSupported ? 1 : 0,
+			StereoTwin::gSliceTwins ? 1 : 0,
+			StereoTwin::gHaveTwins ? 1 : 0,
+			StereoTwin::gDoubleDraw ? 1 : 0,
+			StereoTwin::gRedirectToTwins ? 1 : 0,
+			StereoSinglePass::FoldSceneBufferEnabled() ? 1 : 0,
+			StereoSinglePass::FoldDepthTestedEnabled() ? 1 : 0,
+			StereoSinglePass::FlagFilePresent(L"vr_occ_remap_off.txt") ? 0 : 1,
+			VRMenu::ExpandedVisibilityActive() ? 1 : 0);
 	}
 
 	// OpenVR works in metres. The game's world units appear to be metres
@@ -23630,13 +23707,30 @@ namespace VRPose {
 			if (haveGameAdapter) {
 				LogInfo("VRPose: game is rendering on adapter \"%S\" (LUID %08x:%08x)\n",
 					gameDesc.Description, gameDesc.AdapterLuid.HighPart, gameDesc.AdapterLuid.LowPart);
-				CompatibilityLog("game_adapter=\"%S\" luid=%08x:%08x\n",
+				CompatibilityLog("game_adapter=\"%S\" luid=%08x:%08x vendor_id=0x%04x "
+					"device_id=0x%04x subsystem_id=0x%08x revision=0x%02x "
+					"dedicated_video_mb=%.0f dedicated_system_mb=%.0f shared_system_mb=%.0f\n",
 					gameDesc.Description, gameDesc.AdapterLuid.HighPart,
-					gameDesc.AdapterLuid.LowPart);
+					gameDesc.AdapterLuid.LowPart, gameDesc.VendorId, gameDesc.DeviceId,
+					gameDesc.SubSysId, gameDesc.Revision,
+					CompatibilityMegabytes(gameDesc.DedicatedVideoMemory),
+					CompatibilityMegabytes(gameDesc.DedicatedSystemMemory),
+					CompatibilityMegabytes(gameDesc.SharedSystemMemory));
 			} else {
 				LogInfo("VRPose: could not determine the game's DXGI adapter\n");
 				CompatibilityLog("game_adapter=unknown\n");
 			}
+
+			D3D11_FEATURE_DATA_D3D11_OPTIONS3 options3 = {};
+			const HRESULT options3Hr = device->CheckFeatureSupport(
+				D3D11_FEATURE_D3D11_OPTIONS3, &options3, sizeof(options3));
+			CompatibilityLog("d3d11 feature_level=0x%04x options3_hr=0x%08x "
+				"vprt_capable=%d\n",
+				(unsigned)device->GetFeatureLevel(), (unsigned)options3Hr,
+				SUCCEEDED(options3Hr) &&
+				options3.VPAndRTArrayIndexFromAnyShaderFeedingRasterizer ? 1 : 0);
+			CompatibilityLogVideoMemory(device, "startup");
+			CompatibilityLogStereoPolicy("startup");
 
 			// Resolve SteamVR's requested adapter index to a name so the
 			// comparison is readable rather than a bare number.
@@ -23665,6 +23759,8 @@ namespace VRPose {
 				}
 				factory->Release();
 			}
+			if (gameAdapter)
+				gameAdapter->Release();
 		}
 
 		ID3D11Texture2D *backBuffer = nullptr;
@@ -23980,9 +24076,10 @@ namespace VRPose {
 
 		sLastSubmitAccepted = errL == vr::VRCompositorError_None &&
 			errR == vr::VRCompositorError_None;
+		LONG acceptedSubmitCount = sSuccessfulSubmits;
 		if (sLastSubmitAccepted) {
 			sConsecutiveFailures = 0;
-			InterlockedIncrement(&sSuccessfulSubmits);
+			acceptedSubmitCount = InterlockedIncrement(&sSuccessfulSubmits);
 		}
 		else
 			sConsecutiveFailures++;
@@ -23992,6 +24089,52 @@ namespace VRPose {
 			LogInfo("VRPose: first successful frame submission to OpenVR compositor\n");
 			CompatibilityLog("submission=first-success\n");
 			sLoggedFirstSubmit = true;
+		}
+
+		// One delayed snapshot shows what the optimized path actually did after
+		// shader creation and scene-target discovery have settled. Raw totals are
+		// intentional: collecting them adds no queries, readbacks or per-frame I/O.
+		static bool sLoggedWarmupCompatibility = false;
+		if (!sLoggedWarmupCompatibility && sLastSubmitAccepted && acceptedSubmitCount >= 300) {
+			sLoggedWarmupCompatibility = true;
+			CompatibilityLogStereoPolicy("warmup");
+			CompatibilityLog("render_path_summary frame=%u accepted_submissions=%ld "
+				"folded_draws=%u doubled_draws=%u shared_draws=%u eye_cb_swaps=%u "
+				"declined_no_variant=%u declined_reads_eye=%u declined_tessellated=%u "
+				"declined_instanced=%u declined_shader_list=%u declined_no_object_cb=%u "
+				"declined_eye_independent=%u declined_depth_tested=%u "
+				"declined_scene_buffer=%u declined_no_both_slice_view=%u\n",
+				G ? G->frame_no : 0u, acceptedSubmitCount,
+				StereoSinglePass::gDraws, StereoTwin::gDoubledDraws,
+				StereoTwin::gSharedDraws, StereoTwin::gEyeCBSwaps,
+				StereoSinglePass::gDeclinedNoVariant,
+				StereoSinglePass::gDeclinedReadsEye,
+				StereoSinglePass::gDeclinedTessellated,
+				StereoSinglePass::gDeclinedInstanced,
+				StereoSinglePass::gDeclinedShaderList,
+				StereoSinglePass::gDeclinedNoObjectCB,
+				StereoSinglePass::gDeclinedEyeIndependent,
+				StereoSinglePass::gDeclinedDepthTested,
+				StereoSinglePass::gDeclinedSceneBuffer,
+				StereoSinglePass::gDeclinedNoBothSliceView);
+			CompatibilityLogVideoMemory(device, "warmup");
+
+			vr::Compositor_FrameTiming timing = {};
+			timing.m_nSize = sizeof(timing);
+			if (compositor->GetFrameTiming(&timing, 0)) {
+				CompatibilityLog("openvr_frame_timing frame_index=%u presents=%u mispresented=%u "
+					"dropped=%u reprojection_flags=0x%x client_interval_ms=%.3f "
+					"pre_submit_gpu_ms=%.3f app_total_gpu_ms=%.3f compositor_gpu_ms=%.3f "
+					"compositor_cpu_ms=%.3f submit_ms=%.3f\n",
+					timing.m_nFrameIndex, timing.m_nNumFramePresents,
+					timing.m_nNumMisPresented, timing.m_nNumDroppedFrames,
+					timing.m_nReprojectionFlags, timing.m_flClientFrameIntervalMs,
+					timing.m_flPreSubmitGpuMs, timing.m_flTotalRenderGpuMs,
+					timing.m_flCompositorRenderGpuMs,
+					timing.m_flCompositorRenderCpuMs, timing.m_flSubmitFrameMs);
+			} else {
+				CompatibilityLog("openvr_frame_timing=unavailable\n");
+			}
 		}
 	}
 
