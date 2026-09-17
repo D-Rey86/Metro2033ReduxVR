@@ -3303,6 +3303,15 @@ STDMETHODIMP HackerDevice::CreateVertexShader(THIS_
 	__out_opt  ID3D11VertexShader **ppVertexShader)
 {
 	LogInfo("HackerDevice::CreateVertexShader called with BytecodeLength = %Iu, handle = %p, ClassLinkage = %p\n", BytecodeLength, pShaderBytecode, pClassLinkage);
+	struct CreateTimer {
+		LARGE_INTEGER start;
+		CreateTimer() { QueryPerformanceCounter(&start); }
+		~CreateTimer() {
+			LARGE_INTEGER end;
+			QueryPerformanceCounter(&end);
+			StereoSinglePass::NoteShaderCreate(false, end.QuadPart - start.QuadPart);
+		}
+	} createTimer;
 
 	HRESULT hr = CreateShader<ID3D11VertexShader, &ID3D11Device::CreateVertexShader>
 			(pShaderBytecode, BytecodeLength, pClassLinkage, ppVertexShader, L"vs");
@@ -3441,6 +3450,15 @@ STDMETHODIMP HackerDevice::CreatePixelShader(THIS_
 	__out_opt  ID3D11PixelShader **ppPixelShader)
 {
 	LogInfo("HackerDevice::CreatePixelShader called with BytecodeLength = %Iu, handle = %p, ClassLinkage = %p\n", BytecodeLength, pShaderBytecode, pClassLinkage);
+	struct CreateTimer {
+		LARGE_INTEGER start;
+		CreateTimer() { QueryPerformanceCounter(&start); }
+		~CreateTimer() {
+			LARGE_INTEGER end;
+			QueryPerformanceCounter(&end);
+			StereoSinglePass::NoteShaderCreate(true, end.QuadPart - start.QuadPart);
+		}
+	} createTimer;
 
 	HRESULT hr = CreateShader<ID3D11PixelShader, &ID3D11Device::CreatePixelShader>
 			(pShaderBytecode, BytecodeLength, pClassLinkage, ppPixelShader, L"ps");

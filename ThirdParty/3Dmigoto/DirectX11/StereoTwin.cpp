@@ -3,6 +3,7 @@
 #include <unordered_map>
 #include <vector>
 #include <cmath>
+#include <intrin.h>
 
 #include "log.h"
 #include "Globals.h"
@@ -58,6 +59,181 @@ namespace StereoTwin {
 	unsigned gDoubledDraws = 0;
 	unsigned gSharedDraws = 0;
 	unsigned gEyeCBSwaps = 0;
+	unsigned gEyeCBRewrites[2] = { 0, 0 };
+	unsigned gEyeCBRestores[2] = { 0, 0 };
+	unsigned gEyeCBPSBinds = 0;
+	unsigned gPaletteTwinBinds = 0;
+	unsigned gPaletteTwinRestores = 0;
+
+	unsigned long long gMapDriverTicks = 0, gMapBodyTicks = 0, gMapDriverCalls = 0;
+	unsigned long long gUnmapDriverTicks = 0, gUnmapBodyTicks = 0, gUnmapDriverCalls = 0;
+	volatile LONG gViewGeneration = 0;
+	unsigned long long gUnmapSecTicks[kUnmapSecCount] = { 0 };
+	unsigned long long gUnmapSecHits[kUnmapSecCount] = { 0 };
+
+	unsigned long long gDrawSecTicks[kDrawSecCount] = { 0 };
+	unsigned long long gDrawSecHits[kDrawSecCount] = { 0 };
+
+	const char *ReportDrawSections()
+	{
+		static const char *names[kDrawSecCount] = {
+			"probes", "BeforeDraw", "restore eye0 CB", "fold attempt+draw",
+			"game draw (driver)", "second eye", "AfterDraw"
+		};
+		static unsigned lastLogged = 0;
+		static unsigned accFrames = 0;
+		static unsigned long long accTicks[kDrawSecCount] = { 0 };
+		static unsigned long long accHits[kDrawSecCount] = { 0 };
+		// rdtsc-to-ms scale, calibrated against QPC over the run.
+		static unsigned long long tsc0 = 0;
+		static LARGE_INTEGER qpc0 = {};
+		if (!tsc0) {
+			tsc0 = __rdtsc();
+			QueryPerformanceCounter(&qpc0);
+		}
+		for (int i = 0; i < kDrawSecCount; i++) {
+			accTicks[i] += gDrawSecTicks[i];
+			accHits[i] += gDrawSecHits[i];
+			gDrawSecTicks[i] = 0;
+			gDrawSecHits[i] = 0;
+		}
+		accFrames++;
+		if (G->frame_no - lastLogged < 600 || !accFrames)
+			return NULL;
+		lastLogged = G->frame_no;
+
+		LARGE_INTEGER qpc, freq;
+		QueryPerformanceCounter(&qpc);
+		QueryPerformanceFrequency(&freq);
+		const unsigned long long tscSpan = __rdtsc() - tsc0;
+		const double qpcSpanMs = (double)(qpc.QuadPart - qpc0.QuadPart) * 1000.0 / (double)freq.QuadPart;
+		const double toMs = tscSpan ? qpcSpanMs / (double)tscSpan : 0.0;
+		static char line[900];
+		int used = sprintf_s(line, "DrawIndexed sections (ms/frame, hits/frame, us/hit):");
+		for (int i = 0; i < kDrawSecCount && used > 0; i++) {
+			const double ms = (double)accTicks[i] * toMs / accFrames;
+			const double hits = (double)accHits[i] / accFrames;
+			used += sprintf_s(line + used, sizeof(line) - used, " %s %.2f/%.0f/%.2f%s",
+				names[i], ms, hits, hits > 0.0 ? ms * 1000.0 / hits : 0.0,
+				i + 1 < kDrawSecCount ? " |" : "");
+			accTicks[i] = 0;
+			accHits[i] = 0;
+		}
+		accFrames = 0;
+		return line;
+	}
+
+	const char *ReportUnmapSections()
+	{
+		static const char *names[kUnmapSecCount] = {
+			"VB shadow", "clip snapshot", "object cb0 x2 eyes", "camera cb1 x2 eyes",
+			"palette snapshots", "palette phase/patch", "divert"
+		};
+		static unsigned lastLogged = 0;
+		static unsigned accFrames = 0;
+		static unsigned long long accTicks[kUnmapSecCount] = { 0 };
+		static unsigned long long accHits[kUnmapSecCount] = { 0 };
+		for (int i = 0; i < kUnmapSecCount; i++) {
+			accTicks[i] += gUnmapSecTicks[i];
+			accHits[i] += gUnmapSecHits[i];
+			gUnmapSecTicks[i] = 0;
+			gUnmapSecHits[i] = 0;
+		}
+		accFrames++;
+		if (G->frame_no - lastLogged < 600 || !accFrames)
+			return NULL;
+		lastLogged = G->frame_no;
+
+		LARGE_INTEGER freq;
+		QueryPerformanceFrequency(&freq);
+		const double toMs = 1000.0 / (double)freq.QuadPart;
+		static char line[900];
+		int used = sprintf_s(line, "unmap sections (ms/frame, hits/frame, us/hit):");
+		for (int i = 0; i < kUnmapSecCount && used > 0; i++) {
+			const double ms = (double)accTicks[i] * toMs / accFrames;
+			const double hits = (double)accHits[i] / accFrames;
+			used += sprintf_s(line + used, sizeof(line) - used, " %s %.2f/%.0f/%.2f%s",
+				names[i], ms, hits, hits > 0.0 ? ms * 1000.0 / hits : 0.0,
+				i + 1 < kUnmapSecCount ? " |" : "");
+			accTicks[i] = 0;
+			accHits[i] = 0;
+		}
+		accFrames = 0;
+		return line;
+	}
+
+	const char *ReportMapSplit()
+	{
+		static unsigned lastLogged = 0;
+		static unsigned accFrames = 0;
+		static unsigned long long acc[6] = { 0 };
+		unsigned long long *counters[6] = {
+			&gMapDriverTicks, &gMapBodyTicks, &gMapDriverCalls,
+			&gUnmapDriverTicks, &gUnmapBodyTicks, &gUnmapDriverCalls
+		};
+		for (int i = 0; i < 6; i++) {
+			acc[i] += *counters[i];
+			*counters[i] = 0;
+		}
+		accFrames++;
+
+		if (G->frame_no - lastLogged < 600 || !accFrames)
+			return NULL;
+		lastLogged = G->frame_no;
+
+		LARGE_INTEGER freq;
+		QueryPerformanceFrequency(&freq);
+		const double toUs = 1000000.0 / (double)freq.QuadPart;
+		const double mapCalls = acc[2] ? (double)acc[2] : 1.0;
+		const double unmapCalls = acc[5] ? (double)acc[5] : 1.0;
+		static char line[400];
+		sprintf_s(line, "map split: Map %.0f calls/frame, driver %.3f us + our body %.3f us | "
+			"Unmap %.0f calls/frame, driver %.3f us + our body %.3f us",
+			(double)acc[2] / accFrames,
+			(double)acc[0] * toUs / mapCalls, (double)acc[1] * toUs / mapCalls,
+			(double)acc[5] / accFrames,
+			(double)acc[3] * toUs / unmapCalls, (double)acc[4] * toUs / unmapCalls);
+		for (int i = 0; i < 6; i++)
+			acc[i] = 0;
+		accFrames = 0;
+		return line;
+	}
+
+	const char *ReportEyeCBCensus()
+	{
+		static unsigned lastLogged = 0;
+		static unsigned accFrames = 0;
+		static unsigned acc[8] = { 0 };
+		unsigned *counters[8] = {
+			&gEyeCBRewrites[0], &gEyeCBRewrites[1], &gEyeCBRestores[0], &gEyeCBRestores[1],
+			&gEyeCBPSBinds, &gPaletteTwinBinds, &gPaletteTwinRestores, &gDoubledDraws
+		};
+		for (int i = 0; i < 7; i++) {
+			acc[i] += *counters[i];
+			*counters[i] = 0;
+		}
+		// gDoubledDraws is a running total consumed elsewhere as a delta, so
+		// take a delta here too rather than accumulating the total.
+		static unsigned prevDoubled = 0;
+		acc[7] += gDoubledDraws - prevDoubled;
+		prevDoubled = gDoubledDraws;
+		accFrames++;
+
+		if (G->frame_no - lastLogged < 600 || !accFrames)
+			return NULL;
+		lastLogged = G->frame_no;
+		const double f = (double)accFrames;
+		static char line[400];
+		sprintf_s(line, "eye-CB census per frame (each is one Map+Unmap pair unless noted): "
+			"rewrite slot0 %.0f, slot1 %.0f | restore slot0 %.0f, slot1 %.0f | "
+			"PS binds %.0f | palette binds %.0f, restores %.0f | doubled draws %.0f",
+			acc[0] / f, acc[1] / f, acc[2] / f, acc[3] / f,
+			acc[4] / f, acc[5] / f, acc[6] / f, acc[7] / f);
+		for (int i = 0; i < 8; i++)
+			acc[i] = 0;
+		accFrames = 0;
+		return line;
+	}
 
 	namespace {
 
@@ -203,6 +379,8 @@ namespace StereoTwin {
 			LogInfo("SinglePass: could not query D3D11_OPTIONS3 (hr=0x%x) - assume unsupported\n", hr);
 			return;
 		}
+		StereoSinglePass::gVPRTSupported =
+			o3.VPAndRTArrayIndexFromAnyShaderFeedingRasterizer != 0;
 		LogInfo("SinglePass: VPAndRTArrayIndexFromAnyShaderFeedingRasterizer = %d  (%s)\n",
 			o3.VPAndRTArrayIndexFromAnyShaderFeedingRasterizer,
 			o3.VPAndRTArrayIndexFromAnyShaderFeedingRasterizer
@@ -247,8 +425,12 @@ namespace StereoTwin {
 		LogInfo("StereoTwin: new swap chain - dropping every twin and view cached "
 			"for the old render targets\n");
 		ReleaseAll();
-		StereoSinglePass::ReleaseAll();
-		ResetVRDeviceState();
+		// Not StereoSinglePass::ReleaseAll: the device and its vertex shaders
+		// survive a swap-chain rebuild, and nothing would ever rebuild their
+		// stereo variants - every such shader would silently fall back to the
+		// double draw for the rest of the session. The device-replaced path in
+		// NoteDevice still drops them.
+		ResetVRDeviceState(false);
 
 		sTwinBytesMB = 0;
 		sDumped = false;
@@ -478,6 +660,7 @@ namespace StereoTwin {
 		if (SUCCEEDED(device->CreateRenderTargetView(twinTex, desc, &twinView)) && twinView) {
 			EnterCriticalSection(&sLock);
 			sRTVs[created] = twinView;
+			InterlockedIncrement(&gViewGeneration);
 			LeaveCriticalSection(&sLock);
 
 			// Name every twinned render-target view as it is made.
@@ -523,6 +706,7 @@ namespace StereoTwin {
 		if (SUCCEEDED(device->CreateDepthStencilView(twinTex, desc, &twinView)) && twinView) {
 			EnterCriticalSection(&sLock);
 			sDSVs[created] = twinView;
+			InterlockedIncrement(&gViewGeneration);
 			LeaveCriticalSection(&sLock);
 		}
 	}
@@ -552,6 +736,7 @@ namespace StereoTwin {
 		if (SUCCEEDED(device->CreateShaderResourceView(twinTex, desc, &twinView)) && twinView) {
 			EnterCriticalSection(&sLock);
 			sSRVs[created] = twinView;
+			InterlockedIncrement(&gViewGeneration);
 			LeaveCriticalSection(&sLock);
 		}
 	}
@@ -919,6 +1104,7 @@ namespace StereoTwin {
 		sRTVs.clear();
 		sDSVs.clear();
 		sSRVs.clear();
+		InterlockedIncrement(&gViewGeneration);
 		sTextures.clear();
 		sShared.clear();
 		gHaveTwins = false;

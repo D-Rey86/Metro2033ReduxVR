@@ -110,7 +110,39 @@ namespace StereoSinglePass {
 	extern unsigned gDeclinedNoVariant;
 	extern unsigned gDeclinedReadsEye;
 	extern unsigned gDeclinedTessellated;
-	void ReportFrameStats();
+	// Per-gate decline counters (first failing gate wins).
+	extern unsigned gDeclinedDisabled;
+	extern unsigned gDeclinedPrivateCB;
+	extern unsigned gDeclinedInstanced;
+	extern unsigned gDeclinedShaderList;
+	extern unsigned gDeclinedNoObjectCB;
+	extern unsigned gDeclinedEyeIndependent;
+	extern unsigned gDeclinedDepthTested;
+	extern unsigned gDeclinedSceneBuffer;
+	extern unsigned gDeclinedNoBothSliceView;
+	// Draws blocked only by the instanced gate / only by the depth (and scene-
+	// buffer) gate.
+	extern unsigned gFoldableIfInstanced;
+	extern unsigned gFoldableIfDepth;
+	// SV_RenderTargetArrayIndex from the vertex shader. Without it a folded
+	// draw puts both eyes in slice 0 instead of one per eye.
+	extern bool gVPRTSupported;
+	// Fold depth-tested scene geometry too (follows FoldSceneBufferEnabled).
+	bool FoldDepthTestedEnabled();
+	// Fold the scene-resolution buffers too - the G-buffer and lighting chain.
+	// On unless vr_fold_scene_off.txt sits beside d3d11.dll.
+	bool FoldSceneBufferEnabled();
+	// A marker file beside d3d11.dll (not the process working directory).
+	bool FlagFilePresent(const wchar_t *name);
+
+	// Per-shader opt-out, one hex vertex-shader hash per line of
+	// vr_fold_exclude.txt, so a surface that breaks can be put back on the
+	// proven double-draw path without a rebuild.
+	bool ShaderFoldExcluded(UINT64 vsHash);
+	// One line naming the active policy, for the profiler summary.
+	const char *ReportFoldPolicy();
+	// Accumulates counters; returns a summary line every 600 frames, else NULL.
+	const char *ReportFrameStats();
 
 	// Real GPU milliseconds per frame, from timestamp queries at Present.
 	//
@@ -126,6 +158,12 @@ namespace StereoSinglePass {
 	// This measures the GPU directly, so a change of one millisecond is
 	// visible whether or not it happens to cross a threshold.
 	void FrameTiming(ID3D11Device *device, ID3D11DeviceContext1 *context);
+
+	// Time the game spends inside CreateVertexShader/CreatePixelShader (our
+	// hook included), and the stereo-variant builds. The report returns one
+	// line for a frame in which anything was created, NULL otherwise.
+	void NoteShaderCreate(bool pixel, LONGLONG ticks);
+	const char *ReportShaderCreation();
 
 	void ReportPatchStats();
 	void ReleaseAll();
