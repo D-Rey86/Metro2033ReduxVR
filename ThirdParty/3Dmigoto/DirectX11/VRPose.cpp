@@ -132,7 +132,7 @@ namespace {
 	{
 		CompatibilityLog("stereo_policy phase=%s single_pass=%d vprt=%d slice_twins=%d "
 			"have_twins=%d double_draw=%d redirect_twins=%d fold_scene=%d fold_depth=%d "
-			"occlusion_remap=%d expanded_visibility=%d\n",
+			"occlusion_remap=%d cpu_occlusion_bypass_policy=%d expanded_visibility=%d\n",
 			phase,
 			StereoSinglePass::gEnabled ? 1 : 0,
 			StereoSinglePass::gVPRTSupported ? 1 : 0,
@@ -143,6 +143,8 @@ namespace {
 			StereoSinglePass::FoldSceneBufferEnabled() ? 1 : 0,
 			StereoSinglePass::FoldDepthTestedEnabled() ? 1 : 0,
 			StereoSinglePass::FlagFilePresent(L"vr_occ_remap_off.txt") ? 0 : 1,
+			VRMenu::ExpandedVisibilityActive()
+				&& !StereoSinglePass::FlagFilePresent(L"vr_vis_occlusion_bypass_off.txt") ? 1 : 0,
 			VRMenu::ExpandedVisibilityActive() ? 1 : 0);
 	}
 
@@ -20577,16 +20579,17 @@ namespace VRPose {
 			WriteDisp32(disp, redirected);
 	}
 
-	// The broad expanded-visibility bypasses cost frame time and are not needed
-	// with the occlusion depth remap in HackerContext. Each can still be enabled
-	// with a marker file beside d3d11.dll (vr_vis_occlusion_bypass_on.txt,
-	// vr_vis_object_bypass_on.txt, vr_vis_cluster_bypass_on.txt), read once.
+	// A controlled same-save A/B found that the remapped CPU screen-occlusion
+	// path can still reject visible world objects. Keep only that proven bypass
+	// on by default; the object and cluster frustum bypasses remain opt-in so the
+	// PR's performance recovery is preserved. An off marker exists solely for a
+	// bounded diagnostic rollback. All marker files are read once at startup.
 	enum VisibilityBypass { kVisOcclusion, kVisObject, kVisCluster };
 	static bool VisibilityBypassWanted(VisibilityBypass which)
 	{
 		static int wanted[3] = { -1, -1, -1 };
 		if (wanted[0] < 0) {
-			wanted[kVisOcclusion] = StereoSinglePass::FlagFilePresent(L"vr_vis_occlusion_bypass_on.txt") ? 1 : 0;
+			wanted[kVisOcclusion] = StereoSinglePass::FlagFilePresent(L"vr_vis_occlusion_bypass_off.txt") ? 0 : 1;
 			wanted[kVisObject] = StereoSinglePass::FlagFilePresent(L"vr_vis_object_bypass_on.txt") ? 1 : 0;
 			wanted[kVisCluster] = StereoSinglePass::FlagFilePresent(L"vr_vis_cluster_bypass_on.txt") ? 1 : 0;
 		}

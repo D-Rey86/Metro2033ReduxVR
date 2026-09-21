@@ -11759,3 +11759,39 @@ remaining basic gestures have been implemented.
   is not pruned between builds. The existing Expanded Visibility menu wording
   also no longer accurately describes the new default policy because the broad
   bypasses now require explicit marker files.
+
+### PR2 CPU screen-occlusion regression isolation — 2026-09-21
+
+- A controlled same-save, same-location, Medium-quality comparison changed only
+  `d3d11.dll`. Public Test 3 produced 50.4 effective fps, 18.83 ms CPU,
+  13.35 ms GPU and no world-object pop-in. The exact original PR2 candidate
+  produced 65.8 effective fps, 10.21 ms CPU, 10.36 ms GPU and repeatable
+  world-object pop-in while turning the head.
+- Re-enabling only PR2's existing CPU screen-occlusion bypass with
+  `vr_vis_occlusion_bypass_on.txt` removed the pop-in. Object- and cluster-
+  frustum bypasses remained disabled, while scene/depth folding, shader caching,
+  readback removal and the rest of PR2 remained active. The resulting run
+  produced 63.5 effective fps, 11.32 ms CPU and 10.30 ms GPU. This is within
+  normal run variation of the unmodified PR2 candidate and does not demonstrate
+  a material performance regression.
+- The three complete fpsVR sessions and compatibility reports are archived in
+  `dist/Controlled-AB-20260921` in the integration worktree. The evidence
+  isolates the visible regression to the re-enabled CPU screen-occlusion path;
+  it does not distinguish the remapped depth producer from Metro's consumer.
+- Integration policy now keeps the CPU screen-occlusion bypass enabled by
+  default whenever Expanded Visibility is active. The object and cluster
+  bypasses remain opt-in. `vr_vis_occlusion_bypass_off.txt` is retained only as
+  a diagnostic rollback, and the compatibility report records the launch-time
+  CPU-occlusion bypass policy explicitly.
+- The marker-independent Release build passed all eight C++ tests, the complete
+  public-source test suite, the VR-menu policy verifier, camera-ownership guard
+  and release-binary diagnostic guard. DLL SHA-256:
+  `1DEC4C2445B71B595B09D64F787A2A5D44DB8E0AA8D067AE9835A26B7DBC83F0`.
+- For the final headset run the prior `_on` marker was renamed out of the active
+  path before launch. The compatibility report recorded
+  `cpu_occlusion_bypass_policy=1` at startup and warm-up. The user confirmed no
+  pop-in or visual regression and perceived performance as at least as good as
+  the marker test. fpsVR recorded 64.04 average / 71 median fps, 10.6 ms median
+  GPU time, 8.9 ms median CPU time, and 10.0% reprojection over 1.7 minutes at
+  72 Hz and 2880x3060. Small differences from the marker run are normal run
+  variation and are not evidence that removing the marker improved performance.

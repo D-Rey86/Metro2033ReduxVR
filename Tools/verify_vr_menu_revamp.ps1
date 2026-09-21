@@ -255,6 +255,12 @@ if ($wideStart -lt 0 -or $wideGate -lt $wideStart -or
 	$wideCluster -lt $wideGate -or $wideCluster - $wideStart -gt 1200) {
 	throw 'Expanded Visibility does not gate all broad culling bypasses.'
 }
+if (!$poseSource.Contains('wanted[kVisOcclusion] = StereoSinglePass::FlagFilePresent(L"vr_vis_occlusion_bypass_off.txt") ? 0 : 1;')) {
+	throw 'CPU screen-occlusion bypass is not the default Expanded Visibility policy.'
+}
+if ($poseSource.Contains('wanted[kVisOcclusion] = StereoSinglePass::FlagFilePresent(L"vr_vis_occlusion_bypass_on.txt") ? 1 : 0;')) {
+	throw 'CPU screen-occlusion bypass unexpectedly requires the rejected opt-in policy.'
+}
 foreach ($forbidden in @('InstallCpuScreenOcclusionBypass', 'sUpstreamCameraYieldingToScript =', 'NativeStateFollowSelected() =')) {
     if ($visibilitySource.Contains($forbidden)) {
         throw "Expanded Visibility crossed its documented boundary: $forbidden"
