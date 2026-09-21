@@ -261,6 +261,17 @@ if (!$poseSource.Contains('wanted[kVisOcclusion] = StereoSinglePass::FlagFilePre
 if ($poseSource.Contains('wanted[kVisOcclusion] = StereoSinglePass::FlagFilePresent(L"vr_vis_occlusion_bypass_on.txt") ? 1 : 0;')) {
 	throw 'CPU screen-occlusion bypass unexpectedly requires the rejected opt-in policy.'
 }
+foreach ($removedDiagnostic in @(
+	'CompatibilityLogVideoMemory',
+	'CompatibilityLogStereoPolicy',
+	'render_path_summary frame=',
+	'openvr_frame_timing frame_index=',
+	'd3d11 feature_level='
+)) {
+	if ($poseSource.Contains($removedDiagnostic)) {
+		throw "Temporary PR2 compatibility diagnostic remains: $removedDiagnostic"
+	}
+}
 foreach ($forbidden in @('InstallCpuScreenOcclusionBypass', 'sUpstreamCameraYieldingToScript =', 'NativeStateFollowSelected() =')) {
     if ($visibilitySource.Contains($forbidden)) {
         throw "Expanded Visibility crossed its documented boundary: $forbidden"

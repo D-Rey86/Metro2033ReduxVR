@@ -11795,3 +11795,17 @@ remaining basic gestures have been implemented.
   GPU time, 8.9 ms median CPU time, and 10.0% reprojection over 1.7 minutes at
   72 Hz and 2880x3060. Small differences from the marker run are normal run
   variation and are not evidence that removing the marker improved performance.
+- Before local integration, the temporary diagnostics added in `54ec609` were
+  removed from the runtime: extended adapter/device fields, DXGI video-memory
+  snapshots, stereo-policy snapshots, draw-path counters and the one-shot
+  OpenVR compositor timing snapshot. The original concise compatibility report
+  and the contributor's disabled-by-default profiler remain. Source and release
+  binary guards now reject those temporary diagnostic strings. Because this
+  cleanup followed the accepted headset run, the final cleaned DLL still needs
+  one startup and same-location smoke test; no runtime equivalence is inferred
+  from the successful static tests alone. The clean Release build and its
+  20-string binary diagnostic guard pass; DLL SHA-256:
+  `C56DFEF8D57CEB5694F232624E472E057C0049C128DE6810EE87866F19A6A5C7`.
+- Detailed continuation notes are in
+  `docs/HANDOFF_PR2_PERFORMANCE_2026-09-21.md`. A ready-to-edit public test
+  release announcement is in `docs/PR2_PERFORMANCE_RELEASE_POST_DRAFT.md`.

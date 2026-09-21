@@ -19,7 +19,12 @@ $retiredReports = @(
     'VRPose diag: xform summary',
     'StereoTwin RT: engine changed render targets',
     'StereoTwin PERF:',
-    'StereoTwin RUNS:'
+    'StereoTwin RUNS:',
+    'video_memory phase=',
+    'stereo_policy phase=',
+    'render_path_summary frame=',
+    'openvr_frame_timing frame_index=',
+    'd3d11 feature_level='
 )
 foreach ($playMarker in $retiredReports) {
     if ($playText.Contains($playMarker)) { throw "Retired diagnostic remains: $playMarker" }
