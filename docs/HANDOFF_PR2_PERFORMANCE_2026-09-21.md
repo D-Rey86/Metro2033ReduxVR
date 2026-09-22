@@ -13,8 +13,10 @@ depth-free folding, shader caching and the rest of the PR performance path
 remain active. This retained the measured performance improvement in the
 validated runs.
 
-The work is local only. Nothing from this integration has been pushed to
-GitHub's public `main` branch and no public release containing PR2 exists yet.
+The accepted integration has been fast-forwarded into the clean local `main`
+branch in `C:\Projects\Metro2033ReduxVR-Public`. It is seven commits ahead of
+`origin/main`. Nothing from this integration has been pushed to GitHub and no
+public release containing PR2 exists yet.
 
 Primary source worktree:
 
