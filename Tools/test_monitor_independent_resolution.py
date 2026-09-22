@@ -67,13 +67,26 @@ require(
     "1x must preserve the accepted final-backbuffer submission path",
 )
 
-submission_start = POSE.index("const bool useHighResolutionScene")
+submission_start = POSE.index("const bool highResolutionFrameReady")
 submission_end = POSE.index("ID3D11Texture2D *submissionSourceLeft", submission_start)
 submission = POSE[submission_start:submission_end]
 require(
     submission,
     "VRMenu::EffectiveSceneResolutionScale() > 1.0001f",
     "isolated scene submission must remain restricted to the proven above-1x path",
+)
+require(
+    submission,
+    "const bool useHighResolutionLoadingScreen = monoPresentation &&\n"
+    "\t\t\tIsCinemaFrame() && StampAge(&sLoadingScreenFrame) <= 3 &&\n"
+    "\t\t\thighResolutionFrameReady;",
+    "cinema loading must retain the exact panel-composited high-resolution frame",
+)
+require(
+    submission,
+    "const bool sourceIsHighResolution = useHighResolutionScene ||\n"
+    "\t\t\tuseHighResolutionLoadingScreen;",
+    "loading cinema and gameplay must share the completed high-resolution source gate",
 )
 
 resize_start = WRAPPED_DXGI.index("STDMETHODIMP HackerSwapChain::ResizeBuffers")

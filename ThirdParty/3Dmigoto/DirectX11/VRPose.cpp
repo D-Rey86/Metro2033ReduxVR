@@ -23859,7 +23859,7 @@ namespace VRPose {
 		// It has Metro's final sRGB decoding but none of the backbuffer mutation
 		// that caused the stretched vertical-band failure.  If the exact final
 		// pass was not seen this frame, fall back safely to the native images.
-		const bool useHighResolutionScene = !monoPresentation &&
+		const bool highResolutionFrameReady =
 			StereoTwin::gDoubleDraw &&
 			VRMenu::EffectiveSceneResolutionScale() > 1.0001f &&
 			// RunFrameActions increments G->frame_no immediately before this
@@ -23867,15 +23867,30 @@ namespace VRPose {
 			// with the preceding value even though it belongs to this Present.
 			sHighResolutionFrame + 1u == G->frame_no &&
 			sHighResolutionEyeTexture[0] && sHighResolutionEyeTexture[1];
-		ID3D11Texture2D *submissionSourceLeft = useHighResolutionScene
+		const bool useHighResolutionScene = !monoPresentation &&
+			highResolutionFrameReady;
+		// Above 1x, late 2D is redirected onto the isolated high-resolution
+		// frame after Metro's final scene composite. That includes the exact
+		// loading panel which put this frame into cinema mode. The native
+		// backbuffer therefore contains only the level underneath; presenting it
+		// on the theatre quad is what made the loading screen disappear. Select
+		// the completed isolated frame only while that panel stamp is live. Keep
+		// movies, menus and every other mono presentation on their existing
+		// backbuffer source.
+		const bool useHighResolutionLoadingScreen = monoPresentation &&
+			IsCinemaFrame() && StampAge(&sLoadingScreenFrame) <= 3 &&
+			highResolutionFrameReady;
+		const bool sourceIsHighResolution = useHighResolutionScene ||
+			useHighResolutionLoadingScreen;
+		ID3D11Texture2D *submissionSourceLeft = sourceIsHighResolution
 			? sHighResolutionEyeTexture[0]
 			: sCompositorTexture[leftSource];
-		ID3D11Texture2D *submissionSourceRight = useHighResolutionScene
+		ID3D11Texture2D *submissionSourceRight = sourceIsHighResolution
 			? sHighResolutionEyeTexture[1]
 			: sCompositorTexture[rightSource];
 		const bool legacyPresentation = !VRMenu::GetSettings().brightnessCorrection;
 		ID3D11Texture2D *submittedLeft = PrepareSubmissionTexture(device,
-			context, 0, submissionSourceLeft, useHighResolutionScene,
+			context, 0, submissionSourceLeft, sourceIsHighResolution,
 			legacyPresentation);
 		// A mono presentation must use one identical texture handle for both
 		// eyes. Rendering two nominally identical copies can still expose a
@@ -23883,7 +23898,7 @@ namespace VRPose {
 		ID3D11Texture2D *submittedRight = monoPresentation
 			? submittedLeft
 			: PrepareSubmissionTexture(device, context, 1,
-				submissionSourceRight, useHighResolutionScene,
+				submissionSourceRight, sourceIsHighResolution,
 				legacyPresentation);
 		if (monoPresentation) {
 			// A scene-eye texture is interpreted through two eye projections even

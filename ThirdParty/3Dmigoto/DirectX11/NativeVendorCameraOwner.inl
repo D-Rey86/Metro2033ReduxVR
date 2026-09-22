@@ -20,11 +20,49 @@ static uintptr_t __fastcall Deactivate(void *owner)
 }
 }
 
+static void *NativeVendorCameraOwnerPointer()
+{
+	return InterlockedCompareExchangePointer(
+		&VendorCameraOwnerAdapter::activeOwner, NULL, NULL);
+}
+
+static bool NativeVendorCameraOwnerHasCameraContribution(void *owner)
+{
+	if (!owner)
+		return false;
+	__try {
+		BYTE *ownerBytes = (BYTE *)owner;
+		BYTE *base = (BYTE *)GetModuleHandleA(NULL);
+		if (!base || *(void **)ownerBytes != base + 0xB7A760)
+			return false;
+		// Metro's trade/customize controller uses +0x1534 as the selected
+		// slot in its +0x318 enabled-object list. +0x322 is that list's
+		// native count. Its own camera-selection methods require this same
+		// bounded slot before resolving the selected vendor object.
+		const LONG selectedSlot = *(LONG *)(ownerBytes + 0x1534);
+		const WORD enabledObjectCount = *(WORD *)(ownerBytes + 0x322);
+		const bool standardSelection = selectedSlot >= 0
+			&& (unsigned long)selectedSlot < (unsigned long)enabledObjectCount;
+		// The opening equipped-weapon customizer has no standard vendor-object
+		// list. Metro instead publishes its live per-weapon camera-track handle
+		// at +0x1578 and marks that alternate contribution at +0x1571. Both
+		// clear on returning to the weapon list and on leaving the vendor, even
+		// though this one controller omits its generic deactivation callback.
+		const bool equippedWeaponTrack = ownerBytes[0x1571] != 0
+			&& *(void **)(ownerBytes + 0x1578) != NULL;
+		return standardSelection || equippedWeaponTrack;
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER) {
+		return false;
+	}
+}
+
 static bool NativeVendorCameraOwnerActive()
 {
-	return InterlockedCompareExchange(&sNativeVendorCameraOwnerInstalled, 0, 0) == 1
-		&& InterlockedCompareExchangePointer(
-			&VendorCameraOwnerAdapter::activeOwner, NULL, NULL) != NULL;
+	if (InterlockedCompareExchange(&sNativeVendorCameraOwnerInstalled, 0, 0) != 1)
+		return false;
+	return NativeVendorCameraOwnerHasCameraContribution(
+		NativeVendorCameraOwnerPointer());
 }
 
 static void InstallNativeVendorCameraOwner()

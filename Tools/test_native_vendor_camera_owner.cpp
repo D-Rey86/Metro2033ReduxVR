@@ -24,6 +24,21 @@ struct HookManager {
 #define GetModuleHandleA TestGetModuleHandleA
 #include "../ThirdParty/3Dmigoto/DirectX11/NativeVendorCameraOwner.inl"
 #undef GetModuleHandleA
+
+struct FakeVendorOwner { BYTE bytes[0x1590]; };
+static void SetSelection(FakeVendorOwner *owner, LONG selected, WORD count)
+{
+	*(void **)owner->bytes = image + 0xB7A760;
+	*(LONG *)(owner->bytes + 0x1534) = selected;
+	*(WORD *)(owner->bytes + 0x322) = count;
+}
+
+static void SetEquippedWeaponTrack(FakeVendorOwner *owner, bool active)
+{
+	owner->bytes[0x1571] = active ? 1 : 0;
+	*(void **)(owner->bytes + 0x1578) = active ? owner : NULL;
+}
+
 int main()
 {
 	// An early attempt before Metro exposes the class must remain retryable.
@@ -35,11 +50,25 @@ int main()
 	*(void **)(image + 0xB7A8E0) = image + 0x42DE3C;
 	InstallNativeVendorCameraOwner();
 	Check(sNativeVendorCameraOwnerInstalled == 1); Check(cHookMgr.calls == 2);
-	int a = 1, b = 2;
+	FakeVendorOwner a = {}, b = {};
+	SetSelection(&a, 0, 1);
+	SetSelection(&b, 1, 2);
 	Check(VendorCameraOwnerAdapter::Activate(&a) == 17); Check(NativeVendorCameraOwnerActive());
+	Check(NativeVendorCameraOwnerPointer() == &a);
+	SetSelection(&a, -1, 1); Check(!NativeVendorCameraOwnerActive());
+	SetSelection(&a, 1, 1); Check(!NativeVendorCameraOwnerActive());
+	SetEquippedWeaponTrack(&a, true); Check(NativeVendorCameraOwnerActive());
+	SetEquippedWeaponTrack(&a, false); Check(!NativeVendorCameraOwnerActive());
+	SetSelection(&a, 0, 1); Check(NativeVendorCameraOwnerActive());
+	*(void **)a.bytes = NULL; Check(!NativeVendorCameraOwnerActive());
+	*(void **)a.bytes = image + 0xB7A760; Check(NativeVendorCameraOwnerActive());
 	Check(VendorCameraOwnerAdapter::Deactivate(&b) == 23); Check(NativeVendorCameraOwnerActive());
+	Check(NativeVendorCameraOwnerPointer() == &a);
 	Check(VendorCameraOwnerAdapter::Activate(&b) == 17); Check(NativeVendorCameraOwnerActive());
+	Check(NativeVendorCameraOwnerPointer() == &b);
 	Check(VendorCameraOwnerAdapter::Deactivate(&a) == 23); Check(NativeVendorCameraOwnerActive());
+	Check(NativeVendorCameraOwnerPointer() == &b);
 	Check(VendorCameraOwnerAdapter::Deactivate(&b) == 23); Check(!NativeVendorCameraOwnerActive());
+	Check(NativeVendorCameraOwnerPointer() == NULL);
 	printf("PASS: %u native vendor-owner adapter checks\n", checks);
 }

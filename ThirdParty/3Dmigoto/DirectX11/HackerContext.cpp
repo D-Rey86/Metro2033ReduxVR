@@ -5315,6 +5315,7 @@ void HackerContext::DrawVRMenu()
 		row(-0.76f,ys[5],0.76f,0.038f); resetAt("RESET UI",ys[5]);
 	} else {
 		text("WEAPON OFFSET",-0.72f,0.54f,0.0058f,0.88f,0.88f,0.88f);
+		text("OFFSETS ARE SAVED PER GUN",-0.72f,0.49f,0.0042f,0.70f,0.52f,0.52f);
 		text("LEFT HAND OFFSET",0.08f,0.54f,0.0058f,0.88f,0.88f,0.88f);
 		const char *axis[6]={"POSITION X","POSITION Y","POSITION Z","ROTATION PITCH","ROTATION YAW","ROTATION ROLL"};
 		const float ys[6]={0.43f,0.30f,0.17f,0.04f,-0.09f,-0.22f};

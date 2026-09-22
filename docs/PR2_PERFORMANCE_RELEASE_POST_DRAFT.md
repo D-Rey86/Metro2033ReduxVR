@@ -28,6 +28,14 @@ additional culling regression fix based on controlled headset testing.
   unshipped developer opt-in only.
 - Includes the PR's corrections for floor/bloom reflections, lamp flares,
   light-culling coverage, and the chapter-select television picture.
+- Fixes the opening weapon-customization vendor leaving the VR camera in its
+  vendor-owned state after returning to the weapon list or exiting. Headset
+  turning and thumbstick turning now return normally, while selecting either
+  equipped weapon still uses Metro's intended close-up view.
+- Keeps the loading screen visible on the cinema panel when the mod's
+  monitor-independent high-resolution path is active, instead of exposing the
+  level underneath during loading.
+- Clarifies in the Advanced VR menu that weapon offsets are saved per gun.
 - Keeps the existing Test 3 monitor-independent presentation behavior and
   Steam-only installer safeguards.
 - Removes development-only performance and compatibility diagnostics from the

@@ -11845,3 +11845,64 @@ remaining basic gestures have been implemented.
   2880x3060.
 - Candidate, symbols, rollback DLL, both fpsVR JSON captures and compatibility
   reports are archived in `dist/PR2-RightEyeFlicker-20260921`.
+
+### Collision-aware roomscale body following — deferred 2026-09-21
+
+- The current build has full rendered HMD translation: physical X/Y/Z movement
+  offsets the VR camera, and the weapon, projectile, interaction-zone and
+  visibility paths contain the corresponding compensation. Metro's authoritative
+  player body/collision capsule does not move with that physical displacement.
+- A player report of becoming stuck in a doorway is consistent with this split.
+  Physical turning moves the HMD through a small horizontal arc, so the visible
+  viewpoint can clear or cross a doorway while Metro still collides the capsule
+  at its earlier position. This is a hypothesis, not a confirmed cause. A useful
+  live discriminator is whether physically returning to the original standing
+  point or using the mod's recenter command immediately clears the stuck state.
+- Do not implement this by directly writing the camera or player transform, or
+  by adding raw HMD displacement to the existing movement vector. Either can
+  bypass collision, double-apply camera motion, or make physical and thumbstick
+  locomotion fight each other.
+- A safe implementation must route horizontal HMD displacement through Metro's
+  native local-player movement/collision path, measure the displacement actually
+  accepted by physics, and remove only that accepted portion from the rendered
+  head offset. Vertical HMD movement should remain head/crouch motion rather than
+  lifting the capsule. Blocked motion needs an explicit camera clamp or comfort
+  fade so the eyes cannot continue through geometry while the body is stopped.
+- Existing reverse engineering provides useful entry points but not the final
+  solution: the native-follow path resolves the local player, and the retired
+  direct-movement investigation identified the completed world-movement vector
+  at `metro.exe+0x28D110` and its downstream submission at `+0x28DD70`. Before
+  changing behavior, trace the active native-follow build to prove where the
+  collision-resolved capsule position is published.
+- Required gates and validation include normal gameplay versus loading, menus,
+  vendors and scripted cameras; simultaneous stick and physical movement; snap
+  and smooth turning; crouching, stairs and ladders; walls and narrow doorways;
+  death/reload/recenter transitions; and other headset/runtime configurations.
+  Work is intentionally deferred until there is time for multiple instrumented
+  and headset-validated iterations.
+
+### Lightweight player crash reporting — deferred 2026-09-21
+
+- The inherited 3Dmigoto runtime already contains a disabled crash handler in
+  `util.cpp`, selected by `[Logging] crash`. It flushes `d3d11_log.txt` and uses
+  DbgHelp to create a minidump, but it is not safe to enable unchanged for a
+  public build.
+- The current handler replaces the process-wide unhandled-exception filter,
+  plays SOS tones, creates a keyboard-monitor thread, and defaults to attempting
+  to continue execution after a level-1 fatal exception. Enabling `crash=1`
+  without redesign could conflict with Metro or Windows crash reporting, repeat
+  a fatal fault, or hang while the process is already compromised.
+- A future public implementation should capture only genuinely unhandled
+  exceptions, guard atomically against re-entry, write a bounded text report
+  plus an optional small minidump, retain only a few reports, and then chain the
+  previous filter or allow normal Windows termination. It must not add periodic
+  logging, GPU readback, UI, tones, waits, or NVIDIA/AMD-specific behavior.
+- The text report should include the exception code, faulting module plus
+  relative offset, thread and register context, exact mod build, and a bounded
+  set of pre-existing runtime breadcrumbs. Dumps can contain process-memory
+  fragments and must be documented as private-by-default support artifacts.
+- Validate deliberate access-violation and stack-corruption cases, simultaneous
+  faults, early/late startup crashes, normal Windows Error Reporting behavior,
+  clean exits, driver/device-removal failures, and installer/package rotation.
+  Hard hangs, forced termination, power loss, and some driver failures will
+  remain outside an in-process handler's coverage.

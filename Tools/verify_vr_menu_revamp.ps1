@@ -64,6 +64,7 @@ if ($drawSource.Contains('sliderAt("POSITION Z"')) {
 
 foreach ($required in @(
 	'APPLY WEAPON',
+	'OFFSETS ARE SAVED PER GUN',
 	'APPLY LEFT HAND',
 	'GetCurrentWeaponMenuAdjust(weaponPosition,weaponRotation)',
 	'GetCurrentLeftHandMenuAdjust(leftPosition,leftRotation)',
