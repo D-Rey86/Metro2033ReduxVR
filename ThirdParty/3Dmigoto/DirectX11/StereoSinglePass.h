@@ -130,7 +130,8 @@ namespace StereoSinglePass {
 	// Fold depth-tested scene geometry too (follows FoldSceneBufferEnabled).
 	bool FoldDepthTestedEnabled();
 	// Fold the scene-resolution buffers too - the G-buffer and lighting chain.
-	// On unless vr_fold_scene_off.txt sits beside d3d11.dll.
+	// Off by default; vr_fold_scene_on.txt explicitly enables the experimental
+	// broad scene/depth fold. vr_fold_scene_off.txt wins if both are present.
 	bool FoldSceneBufferEnabled();
 	// A marker file beside d3d11.dll (not the process working directory).
 	bool FlagFilePresent(const wchar_t *name);

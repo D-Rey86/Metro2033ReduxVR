@@ -11809,3 +11809,39 @@ remaining basic gestures have been implemented.
 - Detailed continuation notes are in
   `docs/HANDOFF_PR2_PERFORMANCE_2026-09-21.md`. A ready-to-edit public test
   release announcement is in `docs/PR2_PERFORMANCE_RELEASE_POST_DRAFT.md`.
+
+### PR2 right-eye scene-flicker regression — accepted 2026-09-21
+
+- Extended play across multiple levels exposed repeated surface/effect flicker
+  only in the right eye. Two recordings showed the same eye-specific symptom;
+  one captured a cobweb/surface pattern alternating between adjacent frames.
+- The exact diagnostic-cleaned PR2 DLL (`C56DFEF8...`) was preserved. Adding
+  only `vr_fold_scene_off.txt` removed the flicker. Object pop-in remained
+  fixed. fpsVR recorded 65.22 average fps, 8.46 ms average GPU time, 7.38 ms
+  average CPU time and 9.5% reprojection over 131.5 seconds at 72 Hz and
+  2880x3060. This run covered later level content rather than the earlier
+  controlled A/B location, so it demonstrates no obvious performance collapse
+  but is not a direct numeric comparison with runs A-D.
+- Source inspection identified the structural failure boundary. The generic
+  folded vertex-shader patch changes only eye 1's `SV_Position`; arbitrary
+  view-dependent interpolants consumed by Metro's depth/G-buffer passes remain
+  derived from eye 0. The accumulated unsafe-shader deny-list had already
+  missed common cross-level surfaces, so another hash exclusion would not be a
+  robust release fix.
+- Broad depth/G-buffer folding is now off by default. It requires the explicit
+  developer marker `vr_fold_scene_on.txt`; the existing
+  `vr_fold_scene_off.txt` wins if both markers are present. Safe batching,
+  depth-free folding, shader caching and the remaining PR2 performance work are
+  unchanged. A source-policy test rejects restoring the unsafe release default.
+- All eight C++ tests, the full public-source suite, VR-menu policy verifier and
+  20-string release-binary diagnostic guard pass. A clean `Release | x64`
+  build succeeded with only the pre-existing warnings. Candidate SHA-256:
+  `33DE6EA987F64F1770EAD4CE8957885E5CE665D33894FE7044EE96BC37CA44D3`.
+- The diagnostic marker was renamed out of the active path before deploying the
+  built-in-policy candidate. With neither fold marker active, the user confirmed
+  the flicker remained gone, object pop-in did not return and performance felt
+  similar. fpsVR recorded 67.70 average fps, 9.48 ms average GPU time, 8.20 ms
+  average CPU time and 5.3% reprojection over 272.8 seconds at 72 Hz and
+  2880x3060.
+- Candidate, symbols, rollback DLL, both fpsVR JSON captures and compatibility
+  reports are archived in `dist/PR2-RightEyeFlicker-20260921`.

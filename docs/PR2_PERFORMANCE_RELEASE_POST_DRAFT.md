@@ -14,12 +14,18 @@ additional culling regression fix based on controlled headset testing.
 ### What changed
 
 - Significantly reduced CPU and GPU frame time in the tested scene.
-- Added the PR's scene/depth single-pass work, shader and hot-path caching, and
-  removal of several synchronous GPU readbacks.
+- Added the PR's safe stereo batching/folding work, shader and hot-path caching,
+  and removal of several synchronous GPU readbacks.
 - Retained the VR-safe CPU screen-occlusion bypass. The original PR default
   caused visible world objects to pop in and out in one repeatable test area;
   keeping only this bypass removed the regression while preserving nearly all
   of the measured performance gain.
+- Disabled broad depth/G-buffer folding by default after extended multi-level
+  testing exposed right-eye-only surface flicker. The generic folded shader can
+  correct clip position but cannot rebuild every view-dependent shader output.
+  Returning those passes to the proven two-eye path removed the flicker while
+  retaining similar measured performance. The unsafe broad mode remains an
+  unshipped developer opt-in only.
 - Includes the PR's corrections for floor/bloom reflections, lamp flares,
   light-culling coverage, and the chapter-select television picture.
 - Keeps the existing Test 3 monitor-independent presentation behavior and
@@ -38,6 +44,12 @@ through Virtual Desktop, SteamVR at 72 Hz and 2880x3060 per eye, using an RTX
 - Exact original PR2 build: 65.8 effective FPS, but repeatable object pop-in.
 - Final built-in culling policy: 64.04 average / 71 median FPS, with no pop-in
   observed in the regression location.
+
+A later 4.5-minute multi-level validation of the final safe-fold build averaged
+67.70 FPS at the same resolution and refresh rate. It showed neither the
+right-eye flicker nor renewed object pop-in. Because it covered different level
+content, it is supporting regression evidence rather than a direct A/B against
+the controlled scene above.
 
 These results describe one system and one controlled scene. They are not a
 guarantee of the same improvement on every headset, GPU, level, or runtime.

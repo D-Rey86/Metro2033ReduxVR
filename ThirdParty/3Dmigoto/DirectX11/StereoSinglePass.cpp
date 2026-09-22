@@ -134,14 +134,23 @@ namespace StereoSinglePass {
 		return GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES;
 	}
 
-	// Folding the scene-resolution buffers (G-buffer and lighting chain) is on
-	// by default; vr_fold_scene_off.txt beside d3d11.dll keeps them on
-	// double-draw.
+	// The generic folded vertex shader can rebuild only SV_Position for eye 1.
+	// It cannot rebuild arbitrary view-dependent interpolants consumed by Metro's
+	// depth/G-buffer pixel shaders. Enabling these broad scene folds therefore
+	// produced right-eye-only flicker across unrelated levels (confirmed in two
+	// recordings and removed by the conventional twin path on 2026-09-21).
+	// Keep scene/depth folding experimental and opt-in. The validated batching,
+	// depth-free folds, and the rest of PR2's performance path remain active.
+	// An explicit off marker wins if both markers are present so old diagnostic
+	// installs fail safe.
 	bool FoldSceneBufferEnabled()
 	{
 		static int state = -1;
-		if (state < 0)
-			state = FoldFlagPresent(L"vr_fold_scene_off.txt") ? 0 : 1;
+		if (state < 0) {
+			const bool forcedOff = FoldFlagPresent(L"vr_fold_scene_off.txt");
+			const bool experimentalOn = FoldFlagPresent(L"vr_fold_scene_on.txt");
+			state = experimentalOn && !forcedOff ? 1 : 0;
+		}
 		return state != 0;
 	}
 
@@ -193,7 +202,7 @@ namespace StereoSinglePass {
 			WideCharToMultiByte(CP_ACP, 0, path, -1, dir, MAX_PATH, NULL, NULL);
 		static char line[512];
 		sprintf_s(line, "fold policy: scene buffers %s, depth-tested %s, vprt=%d | switches looked for in %s "
-			"(vr_fold_scene_off.txt / vr_fold_exclude.txt)",
+			"(vr_fold_scene_on.txt / vr_fold_scene_off.txt / vr_fold_exclude.txt)",
 			FoldSceneBufferEnabled() ? "ON" : "off",
 			FoldDepthTestedEnabled() ? "ON" : "off", gVPRTSupported ? 1 : 0,
 			dir[0] ? dir : "(unknown)");

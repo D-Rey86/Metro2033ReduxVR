@@ -7,6 +7,7 @@ $drawSource = [IO.File]::ReadAllText((Join-Path $root 'ThirdParty\3Dmigoto\Direc
 $poseHeader = [IO.File]::ReadAllText((Join-Path $root 'ThirdParty\3Dmigoto\DirectX11\VRPose.h'))
 $poseSource = [IO.File]::ReadAllText((Join-Path $root 'ThirdParty\3Dmigoto\DirectX11\VRPose.cpp'))
 $visibilitySource = [IO.File]::ReadAllText((Join-Path $root 'ThirdParty\3Dmigoto\DirectX11\NativeVisibilityCoverage.inl'))
+$singlePassSource = [IO.File]::ReadAllText((Join-Path $root 'ThirdParty\3Dmigoto\DirectX11\StereoSinglePass.cpp'))
 
 foreach ($required in @(
     'static const int kTabCount = 4;',
@@ -260,6 +261,18 @@ if (!$poseSource.Contains('wanted[kVisOcclusion] = StereoSinglePass::FlagFilePre
 }
 if ($poseSource.Contains('wanted[kVisOcclusion] = StereoSinglePass::FlagFilePresent(L"vr_vis_occlusion_bypass_on.txt") ? 1 : 0;')) {
 	throw 'CPU screen-occlusion bypass unexpectedly requires the rejected opt-in policy.'
+}
+foreach ($required in @(
+	'const bool forcedOff = FoldFlagPresent(L"vr_fold_scene_off.txt");',
+	'const bool experimentalOn = FoldFlagPresent(L"vr_fold_scene_on.txt");',
+	'state = experimentalOn && !forcedOff ? 1 : 0;'
+)) {
+	if (!$singlePassSource.Contains($required)) {
+		throw "Unsafe broad scene/depth folding is not opt-in: $required"
+	}
+}
+if ($singlePassSource.Contains('state = FoldFlagPresent(L"vr_fold_scene_off.txt") ? 0 : 1;')) {
+	throw 'Right-eye-unsafe scene/depth folding has returned as the release default.'
 }
 foreach ($removedDiagnostic in @(
 	'CompatibilityLogVideoMemory',
